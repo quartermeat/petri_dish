@@ -1,0 +1,12 @@
+bin/
+dist/
+.localdev/
+.tools/
+logs/
+android/app/libs/
+android/app/build/
+android/.gradle/
+*.exe
+*.apk
+*.aab
+*.log
