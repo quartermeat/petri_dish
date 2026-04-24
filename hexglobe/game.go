@@ -816,9 +816,8 @@ func (g *Game) setTacticalZoom(zoom float64) {
 
 func (g *Game) clampCamera() {
 	limitLat := math.Pi/2 - g.viewAngularRadius()
-	limitLon := math.Pi - g.viewAngularRadius()
 	g.globe.CameraLat = clampRange(g.globe.CameraLat, -limitLat, limitLat)
-	g.globe.CameraLon = clampRange(g.globe.CameraLon, -limitLon, limitLon)
+	g.globe.CameraLon = wrapLongitude(g.globe.CameraLon)
 }
 
 func (g *Game) worldToView(v core.Vec3) core.Vec3 {
@@ -848,6 +847,16 @@ func clampRange(v, minV, maxV float64) float64 {
 	}
 	if v > maxV {
 		return maxV
+	}
+	return v
+}
+
+func wrapLongitude(v float64) float64 {
+	for v <= -math.Pi {
+		v += math.Pi * 2
+	}
+	for v > math.Pi {
+		v -= math.Pi * 2
 	}
 	return v
 }
