@@ -24,6 +24,8 @@ const (
 	globeZoomBoost      = 1.9
 	tacticalRadius      = 5
 	shadowZoomThreshold = 2.4
+	tacticalMinZoom     = 0.55
+	tacticalMaxZoom     = 2.4
 )
 
 type viewMode int
@@ -55,6 +57,9 @@ type Game struct {
 	tacticalMaps map[int]*core.TacticalMap
 	tacticalID   int
 	tacticalTile int
+	tacticalZoom float64
+	tacticalPanX float64
+	tacticalPanY float64
 }
 
 type drawCell struct {
@@ -92,12 +97,16 @@ func NewGame() *Game {
 		tacticalMaps: map[int]*core.TacticalMap{},
 		tacticalID:   -1,
 		tacticalTile: -1,
+		tacticalZoom: 1,
 	}
 }
 
 func (g *Game) Update() error {
 	if g.mode == modeTactical {
 		g.handleTacticalInput()
+		if tmap := g.currentTacticalMap(); tmap != nil {
+			tmap.Update()
+		}
 		dt := 1.0 / 60.0
 		g.ruleset.Update(g.globe, dt)
 		return nil
@@ -195,6 +204,69 @@ func (g *Game) handlePointerInput() {
 	if g.dragging {
 		x, y := ebiten.CursorPosition()
 		g.applyDrag(x, y)
+	}
+}
+
+func (g *Game) handleTacticalInput() {
+	g.handleTacticalZoom()
+
+	g.touchIDs = ebiten.AppendTouchIDs(g.touchIDs[:0])
+	if len(g.touchIDs) >= 2 {
+		g.handleTacticalPinchZoom(g.touchIDs[0], g.touchIDs[1])
+		return
+	}
+	if g.pinching {
+		g.pinching = false
+		g.pinchTouchA = -1
+		g.pinchTouchB = -1
+		g.dragging = false
+		g.dragTouchID = -1
+		if len(g.touchIDs) == 1 {
+			x, y := ebiten.TouchPosition(g.touchIDs[0])
+			g.beginDrag(g.touchIDs[0], x, y)
+		}
+	}
+
+	if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) {
+		x, y := ebiten.CursorPosition()
+		g.beginDrag(-1, x, y)
+	}
+	if inpututil.IsMouseButtonJustReleased(ebiten.MouseButtonLeft) && g.dragTouchID == -1 {
+		g.finishTacticalPointer(g.dragLastX, g.dragLastY)
+		g.dragging = false
+	}
+
+	if g.dragTouchID == -1 {
+		justTouched := inpututil.AppendJustPressedTouchIDs(nil)
+		if len(justTouched) > 0 {
+			x, y := ebiten.TouchPosition(justTouched[0])
+			g.beginDrag(justTouched[0], x, y)
+		}
+	}
+
+	if g.dragTouchID != -1 {
+		ids := ebiten.AppendTouchIDs(nil)
+		active := false
+		for _, id := range ids {
+			if id == g.dragTouchID {
+				active = true
+				x, y := ebiten.TouchPosition(id)
+				g.applyTacticalDrag(x, y)
+				break
+			}
+		}
+		if !active {
+			x, y := inpututil.TouchPositionInPreviousTick(g.dragTouchID)
+			g.finishTacticalPointer(x, y)
+			g.dragTouchID = -1
+			g.dragging = false
+		}
+		return
+	}
+
+	if g.dragging {
+		x, y := ebiten.CursorPosition()
+		g.applyTacticalDrag(x, y)
 	}
 }
 
@@ -564,7 +636,7 @@ func (g *Game) drawTactical(screen *ebiten.Image) {
 	g.drawTacticalMap(screen)
 	g.drawTacticalBackButton(screen)
 	ebitenutil.DebugPrintAt(screen, "TACTICAL HEX", 16, 18)
-	ebitenutil.DebugPrintAt(screen, "tap tiles to inspect, back to return", 16, 38)
+	ebitenutil.DebugPrintAt(screen, "drag to pan, pinch/wheel to zoom, tap to inspect", 16, 38)
 	if g.tacticalID >= 0 {
 		ebitenutil.DebugPrintAt(screen, "world cell "+itoa(g.tacticalID), 16, 58)
 	}
@@ -575,9 +647,8 @@ func (g *Game) drawTacticalMap(screen *ebiten.Image) {
 	if tmap == nil {
 		return
 	}
-	cx := float64(g.screenWidth) * 0.5
-	cy := float64(g.screenHeight) * 0.54
-	scale := math.Min(float64(g.screenWidth), float64(g.screenHeight)) * 0.07
+	cx, cy := g.tacticalCenter()
+	scale := g.tacticalTileScale()
 	for _, tile := range tmap.Tiles {
 		points := tacticalHexPoints(tile.Center, scale)
 		fill := tile.Fill
@@ -588,8 +659,8 @@ func (g *Game) drawTacticalMap(screen *ebiten.Image) {
 		vertices := make([]ebiten.Vertex, 0, len(points))
 		for _, p := range points {
 			vertices = append(vertices, ebiten.Vertex{
-				DstX: float32(cx + p.x),
-				DstY: float32(cy + p.y),
+				DstX: float32(cx + g.tacticalPanX + p.x),
+				DstY: float32(cy + g.tacticalPanY + p.y),
 				SrcX: 0,
 				SrcY: 0,
 			})
@@ -601,6 +672,7 @@ func (g *Game) drawTacticalMap(screen *ebiten.Image) {
 		}
 		drawPolygonStroke(screen, vertices, edge)
 	}
+	g.drawTacticalEntities(screen, tmap, cx, cy, scale)
 }
 
 func (g *Game) drawTacticalBackButton(screen *ebiten.Image) {
@@ -610,19 +682,10 @@ func (g *Game) drawTacticalBackButton(screen *ebiten.Image) {
 	ebitenutil.DebugPrintAt(screen, "BACK", int(x)+18, int(y)+12)
 }
 
-func (g *Game) handleTacticalInput() {
-	if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) {
-		x, y := ebiten.CursorPosition()
-		g.handleTacticalTap(x, y)
+func (g *Game) finishTacticalPointer(x, y int) {
+	if g.dragMoved {
+		return
 	}
-	justTouched := inpututil.AppendJustPressedTouchIDs(nil)
-	if len(justTouched) > 0 {
-		x, y := ebiten.TouchPosition(justTouched[0])
-		g.handleTacticalTap(x, y)
-	}
-}
-
-func (g *Game) handleTacticalTap(x, y int) {
 	buttonX, buttonY, buttonW, buttonH := g.backButtonRect()
 	if g.pointInRect(float64(x), float64(y), buttonX, buttonY, buttonW, buttonH) {
 		g.mode = modeStrategic
@@ -638,21 +701,34 @@ func (g *Game) pickTacticalTile(x, y int) (int, bool) {
 	if tmap == nil {
 		return -1, false
 	}
-	cx := float64(g.screenWidth) * 0.5
-	cy := float64(g.screenHeight) * 0.54
-	scale := math.Min(float64(g.screenWidth), float64(g.screenHeight)) * 0.07
+	cx, cy := g.tacticalCenter()
+	scale := g.tacticalTileScale()
 	p := screenPoint{x: float64(x), y: float64(y)}
 	for _, tile := range tmap.Tiles {
 		points := tacticalHexPoints(tile.Center, scale)
 		poly := make([]screenPoint, 0, len(points))
 		for _, point := range points {
-			poly = append(poly, screenPoint{x: cx + point.x, y: cy + point.y})
+			poly = append(poly, screenPoint{x: cx + g.tacticalPanX + point.x, y: cy + g.tacticalPanY + point.y})
 		}
 		if pointInPolygon(p, poly) {
 			return tile.ID, true
 		}
 	}
 	return -1, false
+}
+
+func (g *Game) drawTacticalEntities(screen *ebiten.Image, tmap *core.TacticalMap, cx, cy, tileScale float64) {
+	microScale := tileScale / 3.2
+	for _, entity := range tmap.Entities {
+		if entity.MicroCellID < 0 || entity.MicroCellID >= len(tmap.MicroCells) {
+			continue
+		}
+		micro := tmap.MicroCells[entity.MicroCellID]
+		centerX := cx + g.tacticalPanX + micro.Center.X*tileScale
+		centerY := cy + g.tacticalPanY + micro.Center.Y*tileScale
+		drawDisc(screen, float32(centerX+microScale*0.16), float32(centerY+microScale*0.22), float32(microScale*0.46), color.RGBA{0, 0, 0, 70})
+		drawDisc(screen, float32(centerX), float32(centerY), float32(microScale*0.42), entity.Fill)
+	}
 }
 
 func (g *Game) enterTactical() {
@@ -665,6 +741,9 @@ func (g *Game) enterTactical() {
 	}
 	g.tacticalID = cell.ID
 	g.tacticalTile = -1
+	g.tacticalZoom = 1
+	g.tacticalPanX = 0
+	g.tacticalPanY = 0
 	g.mode = modeTactical
 }
 
@@ -673,6 +752,66 @@ func (g *Game) currentTacticalMap() *core.TacticalMap {
 		return nil
 	}
 	return g.tacticalMaps[g.tacticalID]
+}
+
+func (g *Game) tacticalCenter() (float64, float64) {
+	return float64(g.screenWidth) * 0.5, float64(g.screenHeight) * 0.54
+}
+
+func (g *Game) tacticalTileScale() float64 {
+	return math.Min(float64(g.screenWidth), float64(g.screenHeight)) * 0.07 * g.tacticalZoom
+}
+
+func (g *Game) handleTacticalZoom() {
+	_, wheelY := ebiten.Wheel()
+	if wheelY == 0 {
+		return
+	}
+	g.setTacticalZoom(g.tacticalZoom * (1 + wheelY*0.08))
+}
+
+func (g *Game) handleTacticalPinchZoom(a, b ebiten.TouchID) {
+	ax, ay := ebiten.TouchPosition(a)
+	bx, by := ebiten.TouchPosition(b)
+	gap := touchDistance(ax, ay, bx, by)
+	if gap < 1 {
+		return
+	}
+	if !g.pinching || !sameTouchPair(a, b, g.pinchTouchA, g.pinchTouchB) {
+		g.pinching = true
+		g.pinchTouchA = a
+		g.pinchTouchB = b
+		g.pinchPrevGap = gap
+		g.dragging = false
+		g.dragTouchID = -1
+		return
+	}
+	g.setTacticalZoom(g.tacticalZoom * (gap / g.pinchPrevGap))
+	g.pinchPrevGap = gap
+}
+
+func (g *Game) applyTacticalDrag(x, y int) {
+	if !g.dragMoved {
+		if absInt(x-g.dragStartX) <= dragThreshold && absInt(y-g.dragStartY) <= dragThreshold {
+			g.dragLastX = x
+			g.dragLastY = y
+			return
+		}
+		g.dragMoved = true
+		g.dragLastX = x
+		g.dragLastY = y
+		return
+	}
+	dx := x - g.dragLastX
+	dy := y - g.dragLastY
+	g.dragLastX = x
+	g.dragLastY = y
+	g.tacticalPanX += float64(dx)
+	g.tacticalPanY += float64(dy)
+}
+
+func (g *Game) setTacticalZoom(zoom float64) {
+	g.tacticalZoom = math.Max(tacticalMinZoom, math.Min(tacticalMaxZoom, zoom))
 }
 
 func (g *Game) clampCamera() {
