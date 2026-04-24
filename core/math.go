@@ -8,6 +8,10 @@ type Vec3 struct {
 	Z float64
 }
 
+type Mat3 struct {
+	M [3][3]float64
+}
+
 func (v Vec3) Add(o Vec3) Vec3 {
 	return Vec3{X: v.X + o.X, Y: v.Y + o.Y, Z: v.Z + o.Z}
 }
@@ -60,6 +64,66 @@ func RotateY(v Vec3, angle float64) Vec3 {
 		Y: v.Y,
 		Z: -v.X*s + v.Z*c,
 	}
+}
+
+func IdentityMat3() Mat3 {
+	return Mat3{
+		M: [3][3]float64{
+			{1, 0, 0},
+			{0, 1, 0},
+			{0, 0, 1},
+		},
+	}
+}
+
+func RotationXMat3(angle float64) Mat3 {
+	s, c := math.Sin(angle), math.Cos(angle)
+	return Mat3{
+		M: [3][3]float64{
+			{1, 0, 0},
+			{0, c, -s},
+			{0, s, c},
+		},
+	}
+}
+
+func RotationYMat3(angle float64) Mat3 {
+	s, c := math.Sin(angle), math.Cos(angle)
+	return Mat3{
+		M: [3][3]float64{
+			{c, 0, s},
+			{0, 1, 0},
+			{-s, 0, c},
+		},
+	}
+}
+
+func (m Mat3) Mul(n Mat3) Mat3 {
+	var out Mat3
+	for r := 0; r < 3; r++ {
+		for c := 0; c < 3; c++ {
+			out.M[r][c] = m.M[r][0]*n.M[0][c] + m.M[r][1]*n.M[1][c] + m.M[r][2]*n.M[2][c]
+		}
+	}
+	return out
+}
+
+func (m Mat3) MulVec3(v Vec3) Vec3 {
+	return Vec3{
+		X: m.M[0][0]*v.X + m.M[0][1]*v.Y + m.M[0][2]*v.Z,
+		Y: m.M[1][0]*v.X + m.M[1][1]*v.Y + m.M[1][2]*v.Z,
+		Z: m.M[2][0]*v.X + m.M[2][1]*v.Y + m.M[2][2]*v.Z,
+	}
+}
+
+func (m Mat3) Transpose() Mat3 {
+	var out Mat3
+	for r := 0; r < 3; r++ {
+		for c := 0; c < 3; c++ {
+			out.M[r][c] = m.M[c][r]
+		}
+	}
+	return out
 }
 
 func Clamp01(v float64) float64 {

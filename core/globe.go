@@ -24,8 +24,8 @@ type Cell struct {
 type Globe struct {
 	Radius       float64
 	Cells        []Cell
-	RotationY    float64
-	TiltX        float64
+	CameraLon    float64
+	CameraLat    float64
 	SelectedCell int
 }
 
@@ -46,7 +46,8 @@ func NewGlobe(radius float64, subdivisions int) *Globe {
 	return &Globe{
 		Radius:       radius,
 		Cells:        cells,
-		TiltX:        -0.32,
+		CameraLon:    0,
+		CameraLat:    -0.32,
 		SelectedCell: 0,
 	}
 }

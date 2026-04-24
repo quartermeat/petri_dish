@@ -32,6 +32,7 @@ func (r *DemoRuleset) Name() string {
 }
 
 func (r *DemoRuleset) Init(globe *Globe) {
+	firstLand := -1
 	for i := range globe.Cells {
 		cell := &globe.Cells[i]
 		elevation := terrainValue(cell.Center.Normalize())
@@ -42,17 +43,17 @@ func (r *DemoRuleset) Init(globe *Globe) {
 		cell.Ocean = elevation < 0.5
 		cell.Tags["coast"] = math.Abs(elevation-0.5) < 0.045
 		cell.BaseColor = biomeColor(cell)
+		if firstLand == -1 && !cell.Ocean {
+			firstLand = cell.ID
+		}
+	}
+	if firstLand >= 0 {
+		globe.SelectedCell = firstLand
 	}
 }
 
 func (r *DemoRuleset) Update(globe *Globe, dt float64) {
 	r.time += dt
-	globe.RotationY += dt * 0.32
-	if globe.RotationY > math.Pi*2 {
-		globe.RotationY -= math.Pi * 2
-	}
-
-	globe.SelectedCell = nearestVisibleLandCell(globe, Vec3{X: 0.15, Y: 0.1, Z: globe.Radius})
 }
 
 func (r *DemoRuleset) StyleCell(globe *Globe, cell *Cell) CellStyle {
@@ -124,29 +125,6 @@ func biomeColor(cell *Cell) color.RGBA {
 	default:
 		return color.RGBA{122, 170, 106, 255}
 	}
-}
-
-func nearestVisibleLandCell(globe *Globe, target Vec3) int {
-	best := globe.SelectedCell
-	bestScore := -1.0
-	tilt := globe.TiltX
-	spin := globe.RotationY
-	for i := range globe.Cells {
-		cell := &globe.Cells[i]
-		if cell.Ocean {
-			continue
-		}
-		p := RotateX(RotateY(cell.Center, spin), tilt)
-		if p.Z <= 0 {
-			continue
-		}
-		score := p.Normalize().Dot(target.Normalize())
-		if score > bestScore {
-			bestScore = score
-			best = i
-		}
-	}
-	return best
 }
 
 func ScaleColor(base color.RGBA, scale float64) color.RGBA {
