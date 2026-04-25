@@ -8,15 +8,19 @@ import (
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
 )
 
+const modalTapCooldown = 1.0 // seconds before OK is tappable (eats stray in-flight taps)
+
 type modalState struct {
 	lines     []string
 	onConfirm func()
+	cooldown  float64
 }
 
 func (g *Game) showModal(lines []string, onConfirm func()) {
 	g.modal = &modalState{
 		lines:     lines,
 		onConfirm: onConfirm,
+		cooldown:  modalTapCooldown,
 	}
 }
 
@@ -50,6 +54,10 @@ func (g *Game) modalOKRect() (float64, float64, float64, float64) {
 
 func (g *Game) handleModalInput() {
 	if g.modal == nil {
+		return
+	}
+	if g.modal.cooldown > 0 {
+		g.modal.cooldown -= 1.0 / 60.0
 		return
 	}
 	x, y, tapped := -1, -1, false

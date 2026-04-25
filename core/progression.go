@@ -3,9 +3,11 @@ package core
 type GoalKind string
 
 const (
-	GoalMineResource     GoalKind = "mine_resource"
-	GoalDiscoverResource GoalKind = "discover_resource"
-	GoalBuildDevice      GoalKind = "build_device"
+	GoalMineResource       GoalKind = "mine_resource"
+	GoalDiscoverResource   GoalKind = "discover_resource"
+	GoalBuildDevice        GoalKind = "build_device"
+	GoalPlaceStarterUnit   GoalKind = "place_starter_unit"
+	GoalRecoverStarterUnit GoalKind = "recover_starter_unit"
 )
 
 type ProgressGoal struct {
@@ -17,17 +19,78 @@ type ProgressGoal struct {
 }
 
 type ProgressStage struct {
-	ID               string         `json:"id"`
-	Title            string         `json:"title"`
-	NextStageID      string         `json:"nextStageID"`
-	VisibleResources []ResourceType `json:"visibleResources,omitempty"`
-	KnownRecipes     []string       `json:"knownRecipes,omitempty"`
-	Goals            []ProgressGoal `json:"goals"`
+	ID                  string         `json:"id"`
+	Title               string         `json:"title"`
+	NextStageID         string         `json:"nextStageID"`
+	VisibleResources    []ResourceType `json:"visibleResources,omitempty"`
+	KnownRecipes        []string       `json:"knownRecipes,omitempty"`
+	Goals               []ProgressGoal `json:"goals"`
+	PerkPowerThresholds []float64      `json:"perkPowerThresholds,omitempty"`
+	PerkPool            []string       `json:"perkPool,omitempty"`
 }
 
 type ProgressionBook struct {
 	StartStageID string                   `json:"startStageID"`
 	Stages       map[string]ProgressStage `json:"stages"`
+}
+
+type RecipeKind string
+
+const (
+	RecipePart   RecipeKind = "part"
+	RecipeDevice RecipeKind = "device"
+)
+
+type RecipeIngredient struct {
+	Resource ResourceType `json:"resource,omitempty"`
+	RecipeID string       `json:"recipeID,omitempty"`
+	Amount   int          `json:"amount"`
+}
+
+type RecipeCell struct {
+	X    int        `json:"x"`
+	Y    int        `json:"y"`
+	Part DevicePart `json:"part"`
+}
+
+type RecipeDef struct {
+	ID          string             `json:"id"`
+	Title       string             `json:"title"`
+	Kind        RecipeKind         `json:"kind"`
+	Part        DevicePart         `json:"part,omitempty"`
+	Device      DeviceKind         `json:"device,omitempty"`
+	StageID     string             `json:"stageID,omitempty"`
+	Pattern     []RecipeCell       `json:"pattern,omitempty"`
+	Ingredients []RecipeIngredient `json:"ingredients"`
+}
+
+type RecipeBook struct {
+	Recipes map[string]RecipeDef `json:"recipes"`
+}
+
+type PerkKind string
+
+const (
+	PerkCrankPower      PerkKind = "crank_power"      // +Magnitude (fraction) added to crank input per tap
+	PerkMinerOutput     PerkKind = "miner_output"     // +Magnitude (fraction) added to miner output rate
+	PerkPowerEfficiency PerkKind = "power_efficiency" // -Magnitude (fraction) of miner power consumption
+	PerkBufferDecay     PerkKind = "buffer_decay"     // -Magnitude (fraction) of buffer decay rate
+	PerkResourceGift    PerkKind = "resource_gift"    // one-shot: add Magnitude units of Resource
+)
+
+type PerkDef struct {
+	ID          string       `json:"id"`
+	Title       string       `json:"title"`
+	Description string       `json:"description"`
+	Kind        PerkKind     `json:"kind"`
+	StageID     string       `json:"stageID,omitempty"`
+	Magnitude   float64      `json:"magnitude,omitempty"`
+	Resource    ResourceType `json:"resource,omitempty"`
+	OneShot     bool         `json:"oneShot,omitempty"`
+}
+
+type PerkBook struct {
+	Perks map[string]PerkDef `json:"perks"`
 }
 
 func DefaultProgressionBook() *ProgressionBook {
@@ -43,10 +106,34 @@ func DefaultProgressionBook() *ProgressionBook {
 					ResourceIronOre,
 					ResourceCopperOre,
 				},
-				KnownRecipes: []string{
-					"miner",
+				KnownRecipes: nil,
+				PerkPowerThresholds: []float64{
+					40,
+					120,
+					260,
+				},
+				PerkPool: []string{
+					"sturdy-crank",
+					"heavy-crank",
+					"patient-drill",
+					"eager-drill",
+					"steady-buffer",
+					"stone-cache",
+					"iron-cache",
 				},
 				Goals: []ProgressGoal{
+					{
+						Kind:   GoalPlaceStarterUnit,
+						Label:  "place starter miner",
+						Device: DeviceKindMiner,
+						Amount: 1,
+					},
+					{
+						Kind:   GoalRecoverStarterUnit,
+						Label:  "disassemble starter miner",
+						Device: DeviceKindMiner,
+						Amount: 1,
+					},
 					{
 						Kind:     GoalMineResource,
 						Label:    "mine stone",
@@ -58,12 +145,6 @@ func DefaultProgressionBook() *ProgressionBook {
 						Label:    "find iron ore",
 						Resource: ResourceIronOre,
 						Amount:   1,
-					},
-					{
-						Kind:   GoalBuildDevice,
-						Label:  "build miner",
-						Device: DeviceKindMiner,
-						Amount: 1,
 					},
 				},
 			},
@@ -79,8 +160,6 @@ func DefaultProgressionBook() *ProgressionBook {
 				},
 				KnownRecipes: []string{
 					"smelter",
-					"iron ingot",
-					"copper ingot",
 				},
 				Goals: []ProgressGoal{
 					{
@@ -107,4 +186,253 @@ func (b *ProgressionBook) Stage(id string) (ProgressStage, bool) {
 	}
 	stage, ok := b.Stages[id]
 	return stage, ok
+}
+
+func DefaultRecipeBook() *RecipeBook {
+	return &RecipeBook{
+		Recipes: map[string]RecipeDef{
+			"frame": {
+				ID:      "frame",
+				Title:   "Frame",
+				Kind:    RecipePart,
+				Part:    DevicePartFrame,
+				StageID: "bootstrap",
+				Ingredients: []RecipeIngredient{
+					{Resource: ResourceStone, Amount: 2},
+				},
+			},
+			"drill": {
+				ID:      "drill",
+				Title:   "Drill",
+				Kind:    RecipePart,
+				Part:    DevicePartDrill,
+				StageID: "bootstrap",
+				Ingredients: []RecipeIngredient{
+					{Resource: ResourceStone, Amount: 1},
+					{Resource: ResourceIronOre, Amount: 2},
+				},
+			},
+			"motor": {
+				ID:      "motor",
+				Title:   "Motor",
+				Kind:    RecipePart,
+				Part:    DevicePartMotor,
+				StageID: "bootstrap",
+				Ingredients: []RecipeIngredient{
+					{Resource: ResourceStone, Amount: 1},
+					{Resource: ResourceIronOre, Amount: 1},
+					{Resource: ResourceCopperOre, Amount: 2},
+				},
+			},
+			"output": {
+				ID:      "output",
+				Title:   "Output",
+				Kind:    RecipePart,
+				Part:    DevicePartOutput,
+				StageID: "bootstrap",
+				Ingredients: []RecipeIngredient{
+					{Resource: ResourceStone, Amount: 2},
+					{Resource: ResourceCopperOre, Amount: 1},
+				},
+			},
+			"crank": {
+				ID:      "crank",
+				Title:   "Hand Crank",
+				Kind:    RecipePart,
+				Part:    DevicePartHandCrank,
+				StageID: "bootstrap",
+				Ingredients: []RecipeIngredient{
+					{Resource: ResourceStone, Amount: 2},
+					{Resource: ResourceCopperOre, Amount: 1},
+				},
+			},
+			"miner": {
+				ID:      "miner",
+				Title:   "Miner",
+				Kind:    RecipeDevice,
+				Device:  DeviceKindMiner,
+				StageID: "bootstrap",
+				Pattern: []RecipeCell{
+					{X: 2, Y: 1, Part: DevicePartMotor},
+					{X: 1, Y: 2, Part: DevicePartFrame},
+					{X: 2, Y: 2, Part: DevicePartDrill},
+					{X: 3, Y: 2, Part: DevicePartFrame},
+					{X: 2, Y: 3, Part: DevicePartOutput},
+					{X: 2, Y: 4, Part: DevicePartHandCrank},
+				},
+				Ingredients: []RecipeIngredient{
+					{RecipeID: "frame", Amount: 2},
+					{RecipeID: "drill", Amount: 1},
+					{RecipeID: "motor", Amount: 1},
+					{RecipeID: "output", Amount: 1},
+					{RecipeID: "crank", Amount: 1},
+				},
+			},
+			"smelter": {
+				ID:      "smelter",
+				Title:   "Smelter",
+				Kind:    RecipeDevice,
+				StageID: "smelting",
+				Pattern: []RecipeCell{
+					{X: 2, Y: 2, Part: DevicePartMotor},
+					{X: 2, Y: 3, Part: DevicePartOutput},
+					{X: 2, Y: 4, Part: DevicePartHandCrank},
+				},
+				Ingredients: []RecipeIngredient{
+					{Resource: ResourceStone, Amount: 3},
+					{RecipeID: "crank", Amount: 1},
+					{RecipeID: "motor", Amount: 1},
+				},
+			},
+			"iron-ingot": {
+				ID:      "iron-ingot",
+				Title:   "Iron Ingot",
+				Kind:    RecipePart,
+				StageID: "smelting",
+				Ingredients: []RecipeIngredient{
+					{Resource: ResourceIronOre, Amount: 1},
+					{Resource: ResourceCoal, Amount: 1},
+				},
+			},
+			"copper-ingot": {
+				ID:      "copper-ingot",
+				Title:   "Copper Ingot",
+				Kind:    RecipePart,
+				StageID: "smelting",
+				Ingredients: []RecipeIngredient{
+					{Resource: ResourceCopperOre, Amount: 1},
+					{Resource: ResourceCoal, Amount: 1},
+				},
+			},
+		},
+	}
+}
+
+func (b *RecipeBook) Recipe(id string) (RecipeDef, bool) {
+	if b == nil {
+		return RecipeDef{}, false
+	}
+	def, ok := b.Recipes[id]
+	return def, ok
+}
+
+func (b *RecipeBook) StageRecipes(stageID string) []RecipeDef {
+	if b == nil {
+		return nil
+	}
+	out := make([]RecipeDef, 0, 8)
+	for _, recipe := range b.Recipes {
+		if recipe.StageID == stageID {
+			out = append(out, recipe)
+		}
+	}
+	return out
+}
+
+func (b *RecipeBook) RawCost(id string) map[ResourceType]int {
+	if b == nil {
+		return nil
+	}
+	return b.rawCost(id, map[string]bool{})
+}
+
+func DefaultPerkBook() *PerkBook {
+	return &PerkBook{
+		Perks: map[string]PerkDef{
+			"sturdy-crank": {
+				ID:          "sturdy-crank",
+				Title:       "Sturdy Crank",
+				Description: "+25% crank power per tap.",
+				Kind:        PerkCrankPower,
+				StageID:     "bootstrap",
+				Magnitude:   0.25,
+			},
+			"heavy-crank": {
+				ID:          "heavy-crank",
+				Title:       "Heavy Crank",
+				Description: "+50% crank power per tap.",
+				Kind:        PerkCrankPower,
+				StageID:     "bootstrap",
+				Magnitude:   0.50,
+			},
+			"patient-drill": {
+				ID:          "patient-drill",
+				Title:       "Patient Drill",
+				Description: "Miners use 20% less power.",
+				Kind:        PerkPowerEfficiency,
+				StageID:     "bootstrap",
+				Magnitude:   0.20,
+			},
+			"eager-drill": {
+				ID:          "eager-drill",
+				Title:       "Eager Drill",
+				Description: "Miners produce 25% faster.",
+				Kind:        PerkMinerOutput,
+				StageID:     "bootstrap",
+				Magnitude:   0.25,
+			},
+			"steady-buffer": {
+				ID:          "steady-buffer",
+				Title:       "Steady Buffer",
+				Description: "Power decays half as fast.",
+				Kind:        PerkBufferDecay,
+				StageID:     "bootstrap",
+				Magnitude:   0.50,
+			},
+			"stone-cache": {
+				ID:          "stone-cache",
+				Title:       "Stone Cache",
+				Description: "+5 stone now.",
+				Kind:        PerkResourceGift,
+				StageID:     "bootstrap",
+				Resource:    ResourceStone,
+				Magnitude:   5,
+				OneShot:     true,
+			},
+			"iron-cache": {
+				ID:          "iron-cache",
+				Title:       "Iron Cache",
+				Description: "+2 iron ore now.",
+				Kind:        PerkResourceGift,
+				StageID:     "bootstrap",
+				Resource:    ResourceIronOre,
+				Magnitude:   2,
+				OneShot:     true,
+			},
+		},
+	}
+}
+
+func (b *PerkBook) Perk(id string) (PerkDef, bool) {
+	if b == nil {
+		return PerkDef{}, false
+	}
+	def, ok := b.Perks[id]
+	return def, ok
+}
+
+func (b *RecipeBook) rawCost(id string, seen map[string]bool) map[ResourceType]int {
+	def, ok := b.Recipes[id]
+	if !ok || seen[id] {
+		return map[ResourceType]int{}
+	}
+	seen[id] = true
+	cost := map[ResourceType]int{}
+	for _, ing := range def.Ingredients {
+		if ing.Amount <= 0 {
+			continue
+		}
+		if ing.RecipeID != "" {
+			sub := b.rawCost(ing.RecipeID, seen)
+			for resource, amount := range sub {
+				cost[resource] += amount * ing.Amount
+			}
+			continue
+		}
+		if ing.Resource != ResourceNone {
+			cost[ing.Resource] += ing.Amount
+		}
+	}
+	delete(seen, id)
+	return cost
 }

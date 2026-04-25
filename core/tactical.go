@@ -80,10 +80,11 @@ type DeviceDef struct {
 }
 
 type DeviceLayout struct {
-	Width  int
-	Height int
-	Parts  []DevicePart
-	Kind   DeviceKind
+	Width          int
+	Height         int
+	Parts          []DevicePart
+	Kind           DeviceKind
+	SpecialStarter bool
 }
 
 type DeviceKind int
@@ -263,7 +264,42 @@ func (m *TacticalMap) Update() {
 	}
 }
 
-func (m *TacticalMap) Produce(dt float64, inventory map[ResourceType]int, minedTotals map[ResourceType]int) {
+// ProductionMods carries per-tick gameplay multipliers (perks, etc.) and an
+// optional accumulator for "productively spent" power — i.e. power that was
+// consumed AND resulted in actual production. Zero or unset multipliers
+// default to 1.0; pass a populated struct to perturb mining behaviour.
+type ProductionMods struct {
+	OutputMul        float64  // miner output rate multiplier (default 1.0)
+	PowerCostMul     float64  // miner per-tick power cost multiplier (default 1.0)
+	DecayMul         float64  // power-buffer decay multiplier (default 1.0)
+	ProductivePower  *float64 // optional accumulator: productive power spent this tick
+}
+
+func (m *ProductionMods) outputMul() float64 {
+	if m == nil || m.OutputMul == 0 {
+		return 1
+	}
+	return m.OutputMul
+}
+
+func (m *ProductionMods) powerCostMul() float64 {
+	if m == nil || m.PowerCostMul == 0 {
+		return 1
+	}
+	return m.PowerCostMul
+}
+
+func (m *ProductionMods) decayMul() float64 {
+	if m == nil || m.DecayMul == 0 {
+		return 1
+	}
+	return m.DecayMul
+}
+
+func (m *TacticalMap) Produce(dt float64, inventory map[ResourceType]int, minedTotals map[ResourceType]int, mods *ProductionMods) {
+	outMul := mods.outputMul()
+	costMul := mods.powerCostMul()
+	decayMul := mods.decayMul()
 	for i := range m.Tiles {
 		tile := &m.Tiles[i]
 		if tile.Device == nil || tile.Resource == ResourceNone || tile.ResourceRemaining <= 0 {
@@ -276,15 +312,20 @@ func (m *TacticalMap) Produce(dt float64, inventory map[ResourceType]int, minedT
 		if def.Kind == DeviceKindNone {
 			continue
 		}
-		tile.PowerBuffer = math.Max(0, tile.PowerBuffer-dt*0.04)
-		if tile.PowerBuffer < def.RunPowerCost || !def.RequiresPoolRoute {
+		tile.PowerBuffer = math.Max(0, tile.PowerBuffer-dt*0.04*decayMul)
+		runCost := def.RunPowerCost * costMul
+		if tile.PowerBuffer < runCost || !def.RequiresPoolRoute {
 			continue
 		}
-		tile.PowerBuffer -= def.RunPowerCost
-		rate := def.OutputPerSecond + tile.ResourceRichness*0.42
+		rate := (def.OutputPerSecond + tile.ResourceRichness*0.42) * outMul
 		produced := math.Min(tile.ResourceRemaining, rate*dt)
 		if produced <= 0 {
+			// power not consumed when nothing to mine — stays in the buffer
 			continue
+		}
+		tile.PowerBuffer -= runCost
+		if mods != nil && mods.ProductivePower != nil {
+			*mods.ProductivePower += runCost
 		}
 		tile.ResourceRemaining -= produced
 		tile.ResourceCarry += produced
@@ -434,28 +475,28 @@ func tacticalResource(cell *Cell, q, r int, elevation, moisture float64) (Resour
 		return ResourceStone, 0.2 + n*0.2
 	}
 
-	if elevation > 0.70 && moisture < 0.60 && n > 0.38 {
+	if elevation > 0.74 && moisture < 0.56 && n > 0.52 {
 		return ResourceIronOre, 0.40 + n*0.36
 	}
-	if moisture < 0.34 && elevation < 0.72 && n > 0.34 {
+	if moisture < 0.28 && elevation < 0.66 && n > 0.50 {
 		return ResourceCoal, 0.34 + n*0.34
 	}
-	if moisture > 0.68 && elevation > 0.42 && n > 0.46 {
+	if moisture > 0.74 && elevation > 0.48 && n > 0.62 {
 		return ResourceCrystal, 0.22 + n*0.26
 	}
-	if moisture > 0.46 && elevation < 0.76 && n > 0.32 {
+	if moisture > 0.58 && elevation < 0.70 && n > 0.56 {
 		return ResourceCopperOre, 0.28 + n*0.28
 	}
 
 	switch {
 	case elevation > 0.72:
-		return ResourceStone, 0.18 + n*0.16
+		return ResourceStone, 0.22 + n*0.20
 	case moisture < 0.32:
-		return ResourceStone, 0.18 + n*0.16
+		return ResourceStone, 0.22 + n*0.20
 	case moisture > 0.62:
-		return ResourceCopperOre, 0.20 + n*0.16
+		return ResourceStone, 0.20 + n*0.18
 	default:
-		return ResourceStone, 0.15 + n*0.15
+		return ResourceStone, 0.18 + n*0.18
 	}
 }
 
@@ -602,19 +643,11 @@ func DeviceDefinition(kind DeviceKind) DeviceDef {
 }
 
 func tacticalEntityColor(cell *Cell, index int) color.RGBA {
-	if cell.Ocean {
-		palette := []color.RGBA{
-			{247, 238, 164, 255},
-			{255, 206, 117, 255},
-			{255, 245, 198, 255},
-		}
-		return palette[index%len(palette)]
-	}
 	palette := []color.RGBA{
-		{255, 213, 128, 255},
-		{241, 245, 252, 255},
-		{255, 159, 122, 255},
-		{171, 239, 191, 255},
+		{102, 196, 98, 255},
+		{214, 88, 82, 255},
+		{126, 212, 110, 255},
+		{196, 72, 68, 255},
 	}
 	return palette[index%len(palette)]
 }
