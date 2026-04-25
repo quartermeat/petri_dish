@@ -28,7 +28,11 @@ type DemoRuleset struct {
 }
 
 func NewDemoRuleset() *DemoRuleset {
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	return NewDemoRulesetSeeded(time.Now().UnixNano())
+}
+
+func NewDemoRulesetSeeded(seed int64) *DemoRuleset {
+	rng := rand.New(rand.NewSource(seed))
 	return &DemoRuleset{
 		terrainOffset: Vec3{
 			X: rng.Float64()*8 - 4,

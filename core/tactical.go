@@ -325,6 +325,26 @@ func (m *TacticalMap) ensureResourcePresence(resource ResourceType, score func(T
 	tile.ResourceRemaining = tile.ResourceRichness * 120
 }
 
+// Rehydrate rebuilds runtime indices (microIndex, tileIndex, microOccupied)
+// from the exported fields. Call this after JSON unmarshaling — those
+// indices have lowercase fields and don't survive serialization.
+func (m *TacticalMap) Rehydrate() {
+	m.tileIndex = make(map[[2]int]int, len(m.Tiles))
+	for _, tile := range m.Tiles {
+		m.tileIndex[[2]int{tile.Q, tile.R}] = tile.ID
+	}
+	m.microIndex = make(map[[2]int]int, len(m.MicroCells))
+	for _, micro := range m.MicroCells {
+		m.microIndex[[2]int{micro.Q, micro.R}] = micro.ID
+	}
+	m.microOccupied = make(map[int]int, len(m.Entities))
+	for _, entity := range m.Entities {
+		if entity.MicroCellID >= 0 {
+			m.microOccupied[entity.MicroCellID] = entity.ID
+		}
+	}
+}
+
 func (m *TacticalMap) buildMicroCells() {
 	radius := m.Radius * tacticalMicroScale
 	id := 0

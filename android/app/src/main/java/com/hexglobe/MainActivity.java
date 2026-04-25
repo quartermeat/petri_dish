@@ -22,6 +22,7 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         Seq.setContext(getApplicationContext());
         Mobile.dummy();
+        Mobile.setSaveDir(getFilesDir().getAbsolutePath());
         configureImmersiveWindow();
         setContentView(R.layout.activity_main);
         ebitenView = findViewById(R.id.ebitenview);

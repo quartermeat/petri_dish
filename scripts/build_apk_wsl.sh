@@ -38,11 +38,15 @@ else
   exit 1
 fi
 
+BUILD_VERSION="$(cd "${ROOT_DIR}" && git describe --always --dirty 2>/dev/null || date +%Y%m%d-%H%M%S)"
+echo "Build version: ${BUILD_VERSION}"
+
 echo "Binding Go mobile library (.aar)..."
 GOCACHE=/tmp/hex_globe-go-build GOMODCACHE="${GOMODCACHE:-/home/jerem/work/rewind/CLAUDE_rewind/.localdev/gopath/pkg/mod}" \
   "${EBITENMOBILE_BIN}" bind \
   -target android \
   -javapkg com.hexglobe \
+  -ldflags "-X hex_globe/mobile.Version=${BUILD_VERSION}" \
   -o "${AAR_PATH}" \
   ./mobile
 
