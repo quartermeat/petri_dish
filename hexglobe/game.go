@@ -110,6 +110,9 @@ type Game struct {
 	saveOverlayTempPath   string
 	saveOverlayFinalPath  string
 	modal                 *modalState
+	lastTapCellID         int
+	lastTapTime           time.Time
+	inventoryOverlay      *inventoryOverlayState
 	perks                 *core.PerkBook
 	activePerks           []string
 	stagePowerSpent       map[string]float64
@@ -178,6 +181,7 @@ func NewGame() *Game {
 		stagePowerSpent: map[string]float64{},
 		perksAwarded:    map[string]int{},
 		perkRand:        rand.New(rand.NewSource(time.Now().UnixNano())),
+		lastTapCellID:   -1,
 	}
 	g.installFreshWorld(time.Now().UnixNano())
 	return g
@@ -661,6 +665,10 @@ func (g *Game) Update() error {
 		g.handlePerkChoiceInput()
 		return nil
 	}
+	if g.inventoryOverlayActive() {
+		g.handleInventoryOverlayInput()
+		return nil
+	}
 	if g.saveOverlayActive {
 		g.advanceSaveOverlay()
 		return nil
@@ -722,6 +730,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		g.drawResearchView(screen)
 		g.drawModal(screen)
 		g.drawPerkChoice(screen)
+		g.drawInventoryOverlay(screen)
 		g.drawTutorial(screen)
 		g.drawSaveOverlay(screen)
 		g.captureScreenshotIfReady(screen)
@@ -731,6 +740,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		g.drawBuildView(screen)
 		g.drawModal(screen)
 		g.drawPerkChoice(screen)
+		g.drawInventoryOverlay(screen)
 		g.drawTutorial(screen)
 		g.drawSaveOverlay(screen)
 		g.captureScreenshotIfReady(screen)
@@ -740,6 +750,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		g.drawSettings(screen)
 		g.drawModal(screen)
 		g.drawPerkChoice(screen)
+		g.drawInventoryOverlay(screen)
 		g.drawTutorial(screen)
 		g.drawSaveOverlay(screen)
 		g.captureScreenshotIfReady(screen)
@@ -749,6 +760,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		g.drawTactical(screen)
 		g.drawModal(screen)
 		g.drawPerkChoice(screen)
+		g.drawInventoryOverlay(screen)
 		g.drawTutorial(screen)
 		g.drawSaveOverlay(screen)
 		g.captureScreenshotIfReady(screen)
@@ -759,7 +771,6 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	g.drawGlobe(screen)
 	g.drawMinimap(screen)
 	g.drawStrategicSettingsButton(screen)
-	g.drawStrategicEnterButton(screen)
 	g.drawStrategicStats(screen)
 	g.drawStrategicStageGoals(screen)
 	g.drawInventoryCard(screen, 16, 16, 1)
@@ -774,6 +785,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	}
 	g.drawModal(screen)
 	g.drawPerkChoice(screen)
+	g.drawInventoryOverlay(screen)
 	g.drawTutorial(screen)
 	g.drawSaveOverlay(screen)
 	g.captureScreenshotIfReady(screen)
@@ -951,8 +963,13 @@ func (g *Game) beginDrag(touchID ebiten.TouchID, x, y int) {
 	g.dragMoved = false
 }
 
+const doubleTapWindow = 400 * time.Millisecond
+
 func (g *Game) finishSelection(x, y int) {
 	if g.dragMoved {
+		return
+	}
+	if g.handleInventoryButtonTap(x, y) {
 		return
 	}
 	settingsX, settingsY, settingsW, settingsH := g.settingsButtonRect()
@@ -960,14 +977,19 @@ func (g *Game) finishSelection(x, y int) {
 		g.mode = modeSettings
 		return
 	}
-	buttonX, buttonY, buttonW, buttonH := g.enterButtonRect()
-	if g.pointInRect(float64(x), float64(y), buttonX, buttonY, buttonW, buttonH) {
+	cellID, ok := g.pickCellAt(x, y)
+	if !ok {
+		return
+	}
+	now := time.Now()
+	if cellID == g.lastTapCellID && cellID == g.globe.SelectedCell && now.Sub(g.lastTapTime) <= doubleTapWindow {
+		g.lastTapCellID = -1
 		g.enterTactical()
 		return
 	}
-	if cellID, ok := g.pickCellAt(x, y); ok {
-		g.globe.SelectedCell = cellID
-	}
+	g.globe.SelectedCell = cellID
+	g.lastTapCellID = cellID
+	g.lastTapTime = now
 }
 
 func (g *Game) handleWheelZoom() {
@@ -1150,13 +1172,6 @@ func (g *Game) drawMinimap(screen *ebiten.Image) {
 	ebitenutil.DebugPrintAt(screen, "WORLD", int(x0)+6, int(y0)+4)
 }
 
-func (g *Game) drawStrategicEnterButton(screen *ebiten.Image) {
-	x, y, w, h := g.enterButtonRect()
-	drawRoundedRect(screen, float32(x), float32(y), float32(w), float32(h), 10, color.RGBA{21, 86, 112, 236})
-	drawRectOutline(screen, float32(x), float32(y), float32(w), float32(h), color.RGBA{143, 219, 246, 255})
-	ebitenutil.DebugPrintAt(screen, "ENTER HEX", int(x)+12, int(y)+12)
-}
-
 func (g *Game) drawStrategicSettingsButton(screen *ebiten.Image) {
 	x, y, w, h := g.settingsButtonRect()
 	drawRoundedRect(screen, float32(x), float32(y), float32(w), float32(h), 10, color.RGBA{40, 56, 74, 236})
@@ -1187,7 +1202,23 @@ func (g *Game) drawStrategicStageGoals(screen *ebiten.Image) {
 
 func (g *Game) drawTacticalStageGoals(screen *ebiten.Image) {
 	cardX, cardY, _, _ := g.stageGoalsCardRectForTactical()
-	g.drawStageGoalsText(screen, cardX, cardY, 1, 0, 0, 0)
+	stage := g.currentStage()
+	lines := g.stageGoalLines(stage)
+	if len(lines) == 0 {
+		return
+	}
+	// Two-tone halo: dark outline + bright fill so the text reads against
+	// both the dark sky backdrop and the green/blue terrain underneath.
+	g.drawHaloedDebugTextBlock(screen, cardX+12, cardY+12, lines, 1,
+		1, 0.95, 0.7, // warm cream fill
+		0, 0, 0)      // black halo
+}
+
+func (g *Game) drawHaloedDebugTextBlock(screen *ebiten.Image, x, y float64, lines []string, alpha float64, fillR, fillG, fillB, haloR, haloG, haloB float32) {
+	for _, off := range [][2]float64{{-1, 0}, {1, 0}, {0, -1}, {0, 1}} {
+		g.drawTintedDebugTextBlock(screen, x+off[0], y+off[1], lines, alpha, haloR, haloG, haloB)
+	}
+	g.drawTintedDebugTextBlock(screen, x, y, lines, alpha, fillR, fillG, fillB)
 }
 
 func (g *Game) drawCellStatsCard(screen *ebiten.Image, x, y, alpha float64) {
@@ -1786,7 +1817,18 @@ func (g *Game) drawTacticalBackButton(screen *ebiten.Image) {
 	x, y, w, h := g.backButtonRect()
 	drawRoundedRect(screen, float32(x), float32(y), float32(w), float32(h), 10, color.RGBA{64, 80, 98, 236})
 	drawRectOutline(screen, float32(x), float32(y), float32(w), float32(h), color.RGBA{188, 214, 238, 255})
-	ebitenutil.DebugPrintAt(screen, "BACK", int(x)+18, int(y)+12)
+	g.drawLeftArrow(screen, x+w*0.5, y+h*0.5, 12, color.RGBA{228, 236, 244, 255})
+}
+
+// drawLeftArrow renders a filled triangle pointing left, centered at (cx, cy).
+// size sets the half-width / half-height of the bounding box.
+func (g *Game) drawLeftArrow(screen *ebiten.Image, cx, cy, size float64, clr color.RGBA) {
+	verts := []ebiten.Vertex{
+		{DstX: float32(cx - size), DstY: float32(cy)},
+		{DstX: float32(cx + size*0.6), DstY: float32(cy - size*0.85)},
+		{DstX: float32(cx + size*0.6), DstY: float32(cy + size*0.85)},
+	}
+	drawFilledPolygon(screen, verts, clr)
 }
 
 func (g *Game) drawTacticalBuildButton(screen *ebiten.Image) {
@@ -1823,6 +1865,9 @@ func (g *Game) drawTacticalPlaceBuildButton(screen *ebiten.Image) {
 
 func (g *Game) finishTacticalPointer(x, y int) {
 	if g.dragMoved {
+		return
+	}
+	if g.handleInventoryButtonTap(x, y) {
 		return
 	}
 	buttonX, buttonY, buttonW, buttonH := g.backButtonRect()
@@ -2244,19 +2289,19 @@ func itoa(v int) string {
 	return sign + string(buf)
 }
 
+// visibleInventoryResources is the fixed set always shown on the compact
+// inventory card. Anything else lives behind the ... button.
+var visibleInventoryResources = []core.ResourceType{
+	core.ResourceStone,
+	core.ResourceIronOre,
+	core.ResourceCopperOre,
+	core.ResourceCoal,
+}
+
 func (g *Game) inventoryCardLines() []string {
-	lines := []string{
-		"INVENTORY",
-		fmt.Sprintf("stone   %d", g.inventory[core.ResourceStone]),
-		fmt.Sprintf("iron ore %d", g.inventory[core.ResourceIronOre]),
-		fmt.Sprintf("copper ore %d", g.inventory[core.ResourceCopperOre]),
-		fmt.Sprintf("coal    %d", g.inventory[core.ResourceCoal]),
-	}
-	if g.currentStageID != "bootstrap" {
-		lines = append(lines,
-			fmt.Sprintf("iron ingot %d", g.inventory[core.ResourceIronIngot]),
-			fmt.Sprintf("copper ingot %d", g.inventory[core.ResourceCopperIngot]),
-		)
+	lines := []string{"INVENTORY"}
+	for _, resource := range visibleInventoryResources {
+		lines = append(lines, fmt.Sprintf("%s %d", resourceShortLabel(resource), g.inventory[resource]))
 	}
 	power := 0.0
 	if tile := g.currentTacticalTile(); tile != nil {
@@ -2266,8 +2311,57 @@ func (g *Game) inventoryCardLines() []string {
 	return lines
 }
 
+func resourceShortLabel(r core.ResourceType) string {
+	switch r {
+	case core.ResourceStone:
+		return "stone  "
+	case core.ResourceIronOre:
+		return "iron  "
+	case core.ResourceCopperOre:
+		return "copper"
+	case core.ResourceCoal:
+		return "coal  "
+	case core.ResourceIronIngot:
+		return "Fe ingot"
+	case core.ResourceCopperIngot:
+		return "Cu ingot"
+	case core.ResourceCrystal:
+		return "crystal"
+	}
+	return string(r)
+}
+
 func (g *Game) inventoryCardSize() (float64, float64) {
 	return 170.0, 24.0 + float64(len(g.inventoryCardLines()))*16.0
+}
+
+// inventoryHasOverflow reports whether anything is held that doesn't fit
+// in the visible card — drives whether the ... button shows.
+func (g *Game) inventoryHasOverflow() bool {
+	visible := map[core.ResourceType]bool{}
+	for _, r := range visibleInventoryResources {
+		visible[r] = true
+	}
+	for r, count := range g.inventory {
+		if !visible[r] && count > 0 {
+			return true
+		}
+	}
+	for _, count := range g.partInventory {
+		if count > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *Game) inventoryMoreButtonRect(cardX, cardY float64) (float64, float64, float64, float64) {
+	cardW, _ := g.inventoryCardSize()
+	bw := 28.0
+	bh := 22.0
+	bx := cardX + cardW - bw - 6
+	by := cardY + 6
+	return bx, by, bw, bh
 }
 
 func (g *Game) drawInventoryCard(screen *ebiten.Image, x, y, alpha float64) {
@@ -2276,6 +2370,12 @@ func (g *Game) drawInventoryCard(screen *ebiten.Image, x, y, alpha float64) {
 	drawRoundedRect(screen, float32(x), float32(y), float32(w), float32(h), 10, color.RGBA{8, 18, 32, uint8(170 * alpha)})
 	drawRectOutline(screen, float32(x), float32(y), float32(w), float32(h), color.RGBA{126, 176, 210, uint8(210 * alpha)})
 	g.drawAlphaDebugTextBlock(screen, x+12, y+12, lines, alpha)
+	if g.inventoryHasOverflow() {
+		bx, by, bw, bh := g.inventoryMoreButtonRect(x, y)
+		drawRoundedRect(screen, float32(bx), float32(by), float32(bw), float32(bh), 6, color.RGBA{36, 56, 84, uint8(220 * alpha)})
+		drawRectOutline(screen, float32(bx), float32(by), float32(bw), float32(bh), color.RGBA{146, 196, 230, uint8(220 * alpha)})
+		ebitenutil.DebugPrintAt(screen, "...", int(bx)+8, int(by)+5)
+	}
 }
 
 func (g *Game) drawResearchView(screen *ebiten.Image) {
