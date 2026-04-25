@@ -5,10 +5,12 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
@@ -16,6 +18,8 @@ import (
 	"github.com/hajimehoshi/ebiten/v2/vector"
 	"hex_globe/core"
 )
+
+const autoSaveInterval = 10.0
 
 const (
 	defaultScreenWidth  = 432
@@ -79,6 +83,10 @@ type Game struct {
 	screenshotFrames int
 	screenshotDone   bool
 	screenshotErr    error
+	saveDir          string
+	version          string
+	autoSaveTimer    float64
+	modal            *modalState
 }
 
 type drawCell struct {
@@ -107,12 +115,7 @@ func init() {
 }
 
 func NewGame() *Game {
-	globe := core.NewGlobe(1, 3)
-	rules := core.NewDemoRuleset()
-	rules.Init(globe)
-	return &Game{
-		globe:         globe,
-		ruleset:       rules,
+	g := &Game{
 		screenWidth:   defaultScreenWidth,
 		screenHeight:  defaultScreenHeight,
 		zoom:          1,
@@ -125,12 +128,168 @@ func NewGame() *Game {
 		tacticalTile:  -1,
 		tacticalZoom:  1,
 		buildPart:     core.DevicePartFrame,
-		inventory: map[core.ResourceType]int{
-			core.ResourceStone:     6,
-			core.ResourceIronOre:   1,
-			core.ResourceCopperOre: 1,
-		},
 	}
+	g.installFreshWorld(time.Now().UnixNano())
+	return g
+}
+
+// installFreshWorld replaces globe + ruleset + tactical state with a new
+// world derived from seed. Inventory is reset to the starter values.
+func (g *Game) installFreshWorld(seed int64) {
+	globe := core.NewGlobeWithSeed(1, 3, seed)
+	rules := core.NewDemoRulesetSeeded(seed)
+	rules.Init(globe)
+	g.globe = globe
+	g.ruleset = rules
+	g.tacticalMaps = map[int]*core.TacticalMap{}
+	g.tacticalID = -1
+	g.tacticalTile = -1
+	g.tacticalZoom = 1
+	g.tacticalPanX = 0
+	g.tacticalPanY = 0
+	g.zoom = 1
+	g.mode = modeStrategic
+	g.dragging = false
+	g.dragTouchID = -1
+	g.pinching = false
+	g.pinchTouchA = -1
+	g.pinchTouchB = -1
+	g.inventory = map[core.ResourceType]int{
+		core.ResourceStone:     6,
+		core.ResourceIronOre:   1,
+		core.ResourceCopperOre: 1,
+	}
+}
+
+// SetSaveDir tells the game where to read/write save.json. Empty disables
+// persistence (in-memory only).
+func (g *Game) SetSaveDir(dir string) {
+	g.saveDir = dir
+}
+
+// SetVersion stamps the build version onto saves. Empty version causes
+// every load to be treated as a mismatch.
+func (g *Game) SetVersion(version string) {
+	g.version = version
+}
+
+// LoadOrInit restores prior progress from saveDir. Three outcomes:
+//   - no save file → leave fresh world, write a save so future launches resume
+//   - save matches version → apply state on top of fresh world
+//   - save exists but version doesn't match (or file is corrupt) → show
+//     modal informing the player; on OK, wipe with new seed and save
+func (g *Game) LoadOrInit() {
+	if g.saveDir == "" {
+		return
+	}
+	data, err := core.LoadSave(g.saveDir)
+	if err != nil {
+		log.Printf("hex_globe: save load failed (%v) — resetting", err)
+		g.showModal([]string{
+			"Save data couldn't be read.",
+			"Resetting to fresh state.",
+		}, func() {
+			g.wipeAndRestart(time.Now().UnixNano())
+		})
+		return
+	}
+	if data == nil {
+		// No save yet — write one so seed is preserved next launch.
+		g.saveNow()
+		return
+	}
+	if !data.VersionMatches(g.version) {
+		g.showModal([]string{
+			"Save is from a different build.",
+			"Too many changes to load it.",
+			"Resetting to fresh state.",
+		}, func() {
+			g.wipeAndRestart(time.Now().UnixNano())
+		})
+		return
+	}
+	g.applySave(data)
+}
+
+func (g *Game) applySave(data *core.SaveData) {
+	g.installFreshWorld(data.WorldSeed)
+	for resource, count := range data.Inventory {
+		g.inventory[resource] = count
+	}
+	g.globe.CameraLon = data.Camera.Lon
+	g.globe.CameraLat = data.Camera.Lat
+	if data.Camera.Zoom > 0 {
+		g.zoom = data.Camera.Zoom
+	}
+	if data.Selected >= 0 && data.Selected < len(g.globe.Cells) {
+		g.globe.SelectedCell = data.Selected
+	}
+	for _, entry := range data.Tactical {
+		if entry.Map == nil {
+			continue
+		}
+		entry.Map.Rehydrate()
+		g.tacticalMaps[entry.CellID] = entry.Map
+	}
+}
+
+func (g *Game) buildSaveData() *core.SaveData {
+	tactical := make([]core.SavedTacticalEntry, 0, len(g.tacticalMaps))
+	for cellID, tmap := range g.tacticalMaps {
+		tactical = append(tactical, core.SavedTacticalEntry{
+			CellID: cellID,
+			Map:    tmap,
+		})
+	}
+	inventory := make(map[core.ResourceType]int, len(g.inventory))
+	for k, v := range g.inventory {
+		inventory[k] = v
+	}
+	return &core.SaveData{
+		Version:   g.version,
+		WorldSeed: g.globe.Seed,
+		Inventory: inventory,
+		Camera: core.SavedCamera{
+			Lon:  g.globe.CameraLon,
+			Lat:  g.globe.CameraLat,
+			Zoom: g.zoom,
+		},
+		Selected: g.globe.SelectedCell,
+		Tactical: tactical,
+	}
+}
+
+func (g *Game) saveNow() {
+	if g.saveDir == "" {
+		return
+	}
+	if err := g.buildSaveData().Save(g.saveDir); err != nil {
+		log.Printf("hex_globe: save write failed: %v", err)
+	}
+	g.autoSaveTimer = 0
+}
+
+func (g *Game) wipeAndRestart(seed int64) {
+	g.installFreshWorld(seed)
+	g.saveNow()
+}
+
+func (g *Game) requestReset() {
+	g.showModal([]string{
+		"Wipe all progress and start over.",
+		"World stays the same.",
+	}, func() {
+		g.wipeAndRestart(g.globe.Seed)
+	})
+}
+
+func (g *Game) requestRegen() {
+	g.showModal([]string{
+		"Regenerate the world.",
+		"Resources and devices will be lost.",
+	}, func() {
+		g.wipeAndRestart(time.Now().UnixNano())
+	})
 }
 
 func (g *Game) OpenSettingsForTesting() {
@@ -150,11 +309,19 @@ func (g *Game) Update() error {
 		return ebiten.Termination
 	}
 	dt := 1.0 / 60.0
+	if g.modalActive() {
+		g.handleModalInput()
+		return nil
+	}
 	for _, tmap := range g.tacticalMaps {
 		tmap.Produce(dt, g.inventory)
 	}
 	if g.screenshotPath != "" && g.screenshotFrames > 0 {
 		g.screenshotFrames--
+	}
+	g.autoSaveTimer += dt
+	if g.autoSaveTimer >= autoSaveInterval {
+		g.saveNow()
 	}
 	if g.mode == modeBuild {
 		g.handleBuildInput()
@@ -182,16 +349,19 @@ func (g *Game) Update() error {
 func (g *Game) Draw(screen *ebiten.Image) {
 	if g.mode == modeBuild {
 		g.drawBuild(screen)
+		g.drawModal(screen)
 		g.captureScreenshotIfReady(screen)
 		return
 	}
 	if g.mode == modeSettings {
 		g.drawSettings(screen)
+		g.drawModal(screen)
 		g.captureScreenshotIfReady(screen)
 		return
 	}
 	if g.mode == modeTactical {
 		g.drawTactical(screen)
+		g.drawModal(screen)
 		g.captureScreenshotIfReady(screen)
 		return
 	}
@@ -210,6 +380,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		deviceY := enterY - 12 - deviceH
 		g.drawStrategicDevicesCard(screen, deviceX, deviceY, 1)
 	}
+	g.drawModal(screen)
 	g.captureScreenshotIfReady(screen)
 }
 
@@ -1372,10 +1543,6 @@ func itoa(v int) string {
 }
 
 func (g *Game) drawInventoryCard(screen *ebiten.Image, x, y, alpha float64) {
-	w := 170.0
-	h := 128.0
-	drawRoundedRect(screen, float32(x), float32(y), float32(w), float32(h), 10, color.RGBA{8, 18, 32, uint8(170 * alpha)})
-	drawRectOutline(screen, float32(x), float32(y), float32(w), float32(h), color.RGBA{126, 176, 210, uint8(210 * alpha)})
 	lines := []string{
 		"INVENTORY",
 		fmt.Sprintf("stone   %d", g.inventory[core.ResourceStone]),
@@ -1384,8 +1551,17 @@ func (g *Game) drawInventoryCard(screen *ebiten.Image, x, y, alpha float64) {
 		fmt.Sprintf("iron ingot %d", g.inventory[core.ResourceIronIngot]),
 		fmt.Sprintf("copper ingot %d", g.inventory[core.ResourceCopperIngot]),
 		fmt.Sprintf("coal    %d", g.inventory[core.ResourceCoal]),
-		fmt.Sprintf("crystal %d", g.inventory[core.ResourceCrystal]),
 	}
+	power := 0.0
+	if tile := g.currentTacticalTile(); tile != nil {
+		power = tile.PowerBuffer
+	}
+	lines = append(lines, fmt.Sprintf("power   %.3f", power))
+
+	w := 170.0
+	h := 24.0 + float64(len(lines))*16.0
+	drawRoundedRect(screen, float32(x), float32(y), float32(w), float32(h), 10, color.RGBA{8, 18, 32, uint8(170 * alpha)})
+	drawRectOutline(screen, float32(x), float32(y), float32(w), float32(h), color.RGBA{126, 176, 210, uint8(210 * alpha)})
 	g.drawAlphaDebugTextBlock(screen, x+12, y+12, lines, alpha)
 }
 
@@ -1555,7 +1731,7 @@ func (g *Game) handleSettingsTap(x, y int) {
 	}
 	regX, regY, regW, regH := g.regenerateButtonRect()
 	if g.pointInRect(float64(x), float64(y), regX, regY, regW, regH) {
-		g.regenerateWorld()
+		g.requestRegen()
 	}
 }
 
@@ -1926,21 +2102,6 @@ func (g *Game) spendBlueprintCost(kind core.DeviceKind) bool {
 		g.inventory[resource] -= amount
 	}
 	return true
-}
-
-func (g *Game) regenerateWorld() {
-	g.globe = core.NewGlobe(1, 3)
-	g.ruleset = core.NewDemoRuleset()
-	g.ruleset.Init(g.globe)
-	g.tacticalMaps = map[int]*core.TacticalMap{}
-	g.tacticalID = -1
-	g.tacticalTile = -1
-	g.mode = modeStrategic
-	g.dragging = false
-	g.dragTouchID = -1
-	g.pinching = false
-	g.pinchTouchA = -1
-	g.pinchTouchB = -1
 }
 
 func deviceKindBadgeColor(kind core.DeviceKind) color.RGBA {

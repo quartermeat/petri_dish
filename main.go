@@ -5,10 +5,18 @@ package main
 import (
 	"flag"
 	"log"
+	"os"
+	"path/filepath"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"hex_globe/hexglobe"
 )
+
+// Version is overridden at build time via:
+//   -ldflags "-X main.Version=$(git describe --always --dirty)"
+// An empty Version means saves are always treated as version-mismatched —
+// useful as a default so unsigned builds don't load across unknown binaries.
+var Version = ""
 
 func main() {
 	startView := flag.String("view", "", "optional startup view: settings")
@@ -16,6 +24,11 @@ func main() {
 	flag.Parse()
 
 	game := hexglobe.NewGame()
+	game.SetVersion(Version)
+	if dir := desktopSaveDir(); dir != "" {
+		game.SetSaveDir(dir)
+		game.LoadOrInit()
+	}
 	if *startView == "settings" {
 		game.OpenSettingsForTesting()
 	}
@@ -30,4 +43,14 @@ func main() {
 	if err := ebiten.RunGame(game); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func desktopSaveDir() string {
+	if dir, err := os.UserConfigDir(); err == nil && dir != "" {
+		return filepath.Join(dir, "HexGlobe")
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, ".hex_globe")
+	}
+	return ""
 }

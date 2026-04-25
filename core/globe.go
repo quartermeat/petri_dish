@@ -23,6 +23,7 @@ type Cell struct {
 
 type Globe struct {
 	Radius       float64
+	Seed         int64
 	Cells        []Cell
 	CameraLon    float64
 	CameraLat    float64
@@ -41,10 +42,15 @@ type midpointKey struct {
 }
 
 func NewGlobe(radius float64, subdivisions int) *Globe {
+	return NewGlobeWithSeed(radius, subdivisions, 0)
+}
+
+func NewGlobeWithSeed(radius float64, subdivisions int, seed int64) *Globe {
 	vertices, faces := buildIcosphere(subdivisions)
 	cells := buildDualCells(vertices, faces, radius)
 	return &Globe{
 		Radius:       radius,
+		Seed:         seed,
 		Cells:        cells,
 		CameraLon:    0,
 		CameraLat:    -0.32,
