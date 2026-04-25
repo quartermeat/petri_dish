@@ -130,7 +130,7 @@ func DefaultProgressionBook() *ProgressionBook {
 					},
 					{
 						Kind:   GoalRecoverStarterUnit,
-						Label:  "disassemble starter miner",
+						Label:  "pick up starter miner",
 						Device: DeviceKindMiner,
 						Amount: 1,
 					},

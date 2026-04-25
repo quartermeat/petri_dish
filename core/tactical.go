@@ -100,6 +100,7 @@ type TacticalTile struct {
 	R                 int
 	S                 int
 	Center            Vec3
+	Ocean             bool
 	Elevation         float64
 	Moisture          float64
 	Fill              color.RGBA
@@ -166,6 +167,7 @@ func NewTacticalMap(cell *Cell, radius int) *TacticalMap {
 				R:                 r,
 				S:                 s,
 				Center:            axialToWorld(q, r),
+				Ocean:             cell.Ocean,
 				Elevation:         elevation,
 				Moisture:          moisture,
 				Fill:              fill,
@@ -269,10 +271,10 @@ func (m *TacticalMap) Update() {
 // consumed AND resulted in actual production. Zero or unset multipliers
 // default to 1.0; pass a populated struct to perturb mining behaviour.
 type ProductionMods struct {
-	OutputMul        float64  // miner output rate multiplier (default 1.0)
-	PowerCostMul     float64  // miner per-tick power cost multiplier (default 1.0)
-	DecayMul         float64  // power-buffer decay multiplier (default 1.0)
-	ProductivePower  *float64 // optional accumulator: productive power spent this tick
+	OutputMul       float64  // miner output rate multiplier (default 1.0)
+	PowerCostMul    float64  // miner per-tick power cost multiplier (default 1.0)
+	DecayMul        float64  // power-buffer decay multiplier (default 1.0)
+	ProductivePower *float64 // optional accumulator: productive power spent this tick
 }
 
 func (m *ProductionMods) outputMul() float64 {
