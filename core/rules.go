@@ -3,6 +3,8 @@ package core
 import (
 	"image/color"
 	"math"
+	"math/rand"
+	"time"
 )
 
 type CellStyle struct {
@@ -20,11 +22,25 @@ type Ruleset interface {
 }
 
 type DemoRuleset struct {
-	time float64
+	time           float64
+	terrainOffset  Vec3
+	moistureOffset Vec3
 }
 
 func NewDemoRuleset() *DemoRuleset {
-	return &DemoRuleset{}
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	return &DemoRuleset{
+		terrainOffset: Vec3{
+			X: rng.Float64()*8 - 4,
+			Y: rng.Float64()*8 - 4,
+			Z: rng.Float64()*8 - 4,
+		},
+		moistureOffset: Vec3{
+			X: rng.Float64()*8 - 4,
+			Y: rng.Float64()*8 - 4,
+			Z: rng.Float64()*8 - 4,
+		},
+	}
 }
 
 func (r *DemoRuleset) Name() string {
@@ -35,8 +51,8 @@ func (r *DemoRuleset) Init(globe *Globe) {
 	firstLand := -1
 	for i := range globe.Cells {
 		cell := &globe.Cells[i]
-		elevation := terrainValue(cell.Center.Normalize())
-		moisture := moistureValue(cell.Center.Normalize())
+		elevation := terrainValue(cell.Center.Normalize(), r.terrainOffset)
+		moisture := moistureValue(cell.Center.Normalize(), r.moistureOffset)
 		cell.Elevation = elevation
 		cell.Moisture = moisture
 		cell.Data["population"] = 0
@@ -84,20 +100,20 @@ func (r *DemoRuleset) StyleCell(globe *Globe, cell *Cell) CellStyle {
 	}
 }
 
-func terrainValue(v Vec3) float64 {
+func terrainValue(v Vec3, offset Vec3) float64 {
 	n := 0.0
-	n += 0.55 * math.Sin(v.X*3.1+v.Z*1.7)
-	n += 0.25 * math.Sin(v.Y*5.3-v.X*2.2)
-	n += 0.20 * math.Sin((v.X+v.Y-v.Z)*8.1)
-	n += 0.12 * math.Cos(v.Z*11.7+v.Y*4.1)
+	n += 0.55 * math.Sin((v.X+offset.X)*3.1+(v.Z+offset.Z)*1.7)
+	n += 0.25 * math.Sin((v.Y+offset.Y)*5.3-(v.X+offset.X)*2.2)
+	n += 0.20 * math.Sin((v.X+v.Y-v.Z+offset.X+offset.Y-offset.Z)*8.1)
+	n += 0.12 * math.Cos((v.Z+offset.Z)*11.7+(v.Y+offset.Y)*4.1)
 	return Clamp01(0.5 + n*0.35)
 }
 
-func moistureValue(v Vec3) float64 {
+func moistureValue(v Vec3, offset Vec3) float64 {
 	n := 0.0
-	n += 0.5 * math.Sin(v.Z*4.4-v.X*2.9)
-	n += 0.3 * math.Cos(v.Y*6.2+v.Z*3.3)
-	n += 0.2 * math.Sin((v.X-v.Y)*9.1)
+	n += 0.5 * math.Sin((v.Z+offset.Z)*4.4-(v.X+offset.X)*2.9)
+	n += 0.3 * math.Cos((v.Y+offset.Y)*6.2+(v.Z+offset.Z)*3.3)
+	n += 0.2 * math.Sin(((v.X-v.Y)+(offset.X-offset.Y))*9.1)
 	return Clamp01(0.5 + n*0.35)
 }
 
