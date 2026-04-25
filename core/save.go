@@ -22,12 +22,14 @@ type SavedTacticalEntry struct {
 }
 
 type SaveData struct {
-	Version   string              `json:"version"`
-	WorldSeed int64               `json:"worldSeed"`
-	Inventory map[ResourceType]int `json:"inventory"`
-	Camera    SavedCamera         `json:"camera"`
-	Selected  int                 `json:"selectedCell"`
-	Tactical  []SavedTacticalEntry `json:"tactical"`
+	Version      string               `json:"version"`
+	WorldSeed    int64                `json:"worldSeed"`
+	Inventory    map[ResourceType]int `json:"inventory"`
+	Camera       SavedCamera          `json:"camera"`
+	Selected     int                  `json:"selectedCell"`
+	CurrentStage string               `json:"currentStage,omitempty"`
+	MinedTotals  map[ResourceType]int `json:"minedTotals,omitempty"`
+	Tactical     []SavedTacticalEntry `json:"tactical"`
 }
 
 // LoadSave reads and parses save.json from dir. Returns (nil, nil) if no

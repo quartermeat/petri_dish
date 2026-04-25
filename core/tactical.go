@@ -263,7 +263,7 @@ func (m *TacticalMap) Update() {
 	}
 }
 
-func (m *TacticalMap) Produce(dt float64, inventory map[ResourceType]int) {
+func (m *TacticalMap) Produce(dt float64, inventory map[ResourceType]int, minedTotals map[ResourceType]int) {
 	for i := range m.Tiles {
 		tile := &m.Tiles[i]
 		if tile.Device == nil || tile.Resource == ResourceNone || tile.ResourceRemaining <= 0 {
@@ -291,6 +291,9 @@ func (m *TacticalMap) Produce(dt float64, inventory map[ResourceType]int) {
 		whole := int(tile.ResourceCarry)
 		if whole > 0 {
 			inventory[tile.Resource] += whole
+			if minedTotals != nil {
+				minedTotals[tile.Resource] += whole
+			}
 			tile.ResourceCarry -= float64(whole)
 		}
 	}
