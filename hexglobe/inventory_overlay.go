@@ -131,7 +131,13 @@ func (g *Game) drawInventoryOverlay(screen *ebiten.Image) {
 	g.drawInventorySectionHeader(screen, "RESOURCES", textX, rowY)
 	rowY += 22
 	for _, r := range fullInventoryResources {
-		ebitenutil.DebugPrintAt(screen, fmt.Sprintf("%-12s %d", resourceShortLabel(r), g.inventory[r]), int(textX), int(rowY))
+		labelX := int(textX) + 18
+		if resourceHasMapIcon(r) {
+			g.drawInventoryResourceIcon(screen, textX+6, rowY+6, r)
+		} else {
+			labelX = int(textX)
+		}
+		ebitenutil.DebugPrintAt(screen, fmt.Sprintf("%-12s %d", resourceShortLabel(r), g.inventory[r]), labelX, int(rowY))
 		rowY += 18
 	}
 

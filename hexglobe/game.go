@@ -1,10 +1,12 @@
 package hexglobe
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	"image/png"
 	"log"
 	"math"
@@ -15,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	_ "embed"
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
@@ -100,6 +103,7 @@ type Game struct {
 	saveDir               string
 	version               string
 	autoSaveTimer         float64
+	animationTime         float64
 	tutorialLines         []string
 	tutorialSeen          map[string]bool
 	tutorialDismissTimer  float64
@@ -156,24 +160,54 @@ const (
 
 var solidPixel = ebiten.NewImage(1, 1)
 
+//go:embed assets/miner_sprite_sheet.png
+var minerSpriteSheetPNG []byte
+
+//go:embed assets/resource_sprite_sheet.png
+var resourceSpriteSheetPNG []byte
+
+//go:embed assets/friendly_organism_sheet.png
+var friendlyOrganismSheetPNG []byte
+
+//go:embed assets/danger_organism_sheet.png
+var dangerOrganismSheetPNG []byte
+
+//go:embed assets/tactical_texture_atlas.png
+var tacticalTextureAtlasPNG []byte
+
+//go:embed assets/power_indicator_sheet.png
+var powerIndicatorSpriteSheetPNG []byte
+
+var minerSprites [4]*ebiten.Image
+var resourceSprites [4]*ebiten.Image
+var friendlyOrganismSprites [4]*ebiten.Image
+var dangerOrganismSprites [4]*ebiten.Image
+var tacticalTextures [5]*ebiten.Image
+var powerIndicatorSprites [3]*ebiten.Image
+
 func init() {
 	solidPixel.Fill(color.White)
+	initMinerSprites()
+	initResourceSprites()
+	initOrganismSprites()
+	initTacticalTextures()
+	initPowerIndicatorSprites()
 }
 
 func NewGame() *Game {
 	g := &Game{
-		screenWidth:   defaultScreenWidth,
-		screenHeight:  defaultScreenHeight,
-		zoom:          1,
-		dragTouchID:   -1,
-		pinchTouchA:   -1,
-		pinchTouchB:   -1,
-		settingsTouch: -1,
-		tacticalMaps:  map[int]*core.TacticalMap{},
-		tacticalID:    -1,
-		tacticalTile:  -1,
-		tacticalZoom:  1,
-		buildPart:     core.DevicePartFrame,
+		screenWidth:     defaultScreenWidth,
+		screenHeight:    defaultScreenHeight,
+		zoom:            1,
+		dragTouchID:     -1,
+		pinchTouchA:     -1,
+		pinchTouchB:     -1,
+		settingsTouch:   -1,
+		tacticalMaps:    map[int]*core.TacticalMap{},
+		tacticalID:      -1,
+		tacticalTile:    -1,
+		tacticalZoom:    1,
+		buildPart:       core.DevicePartFrame,
 		progression:     core.DefaultProgressionBook(),
 		recipes:         core.DefaultRecipeBook(),
 		perks:           core.DefaultPerkBook(),
@@ -576,7 +610,20 @@ func (g *Game) drawTutorial(screen *ebiten.Image) {
 		return
 	}
 	drawFilledRect(screen, 0, 0, float32(g.screenWidth), float32(g.screenHeight), color.RGBA{0, 0, 0, 132})
-	w := 300.0
+	maxLineWidth := 0
+	for _, line := range g.tutorialLines {
+		if width := len(line)*7 + 4; width > maxLineWidth {
+			maxLineWidth = width
+		}
+	}
+	w := float64(maxLineWidth + 36)
+	if w < 220 {
+		w = 220
+	}
+	maxW := float64(g.screenWidth) - 40
+	if w > maxW {
+		w = maxW
+	}
 	h := 36.0 + float64(len(g.tutorialLines))*18.0
 	x := float64(g.screenWidth)*0.5 - w*0.5
 	y := float64(g.screenHeight)*0.24 - h*0.5
@@ -629,19 +676,16 @@ func (g *Game) triggerTutorials() {
 	if stage.ID != "bootstrap" {
 		return
 	}
-	stone := g.minedTotals[core.ResourceStone]
-	if stone >= 1 {
-		g.showTutorialOnce("bootstrap_stone_first", []string{
-			"Just found stone!",
-			"Unmarked land tiles are your baseline source.",
-		})
+	if g.minedTotals[core.ResourceIronOre] <= 0 &&
+		g.minedTotals[core.ResourceCopperOre] <= 0 &&
+		g.minedTotals[core.ResourceCoal] <= 0 &&
+		g.minedTotals[core.ResourceCrystal] <= 0 {
+		return
 	}
-	if stone >= 5 {
-		g.showTutorialOnce("bootstrap_stone_half", []string{
-			"Half way there!",
-			"Keep moving the starter miner to new deposits.",
-		})
-	}
+	g.showTutorialOnce("bootstrap_stone_plain_tile", []string{
+		"Stone has no ore marker.",
+		"Mine a plain tile to collect stone.",
+	})
 }
 
 func (g *Game) ConfigureScreenshot(path string, frames int) {
@@ -657,6 +701,7 @@ func (g *Game) Update() error {
 		return ebiten.Termination
 	}
 	dt := 1.0 / 60.0
+	g.animationTime += dt
 	if g.modalActive() {
 		g.handleModalInput()
 		return nil
@@ -1211,7 +1256,7 @@ func (g *Game) drawTacticalStageGoals(screen *ebiten.Image) {
 	// both the dark sky backdrop and the green/blue terrain underneath.
 	g.drawHaloedDebugTextBlock(screen, cardX+12, cardY+12, lines, 1,
 		1, 0.95, 0.7, // warm cream fill
-		0, 0, 0)      // black halo
+		0, 0, 0) // black halo
 }
 
 func (g *Game) drawHaloedDebugTextBlock(screen *ebiten.Image, x, y float64, lines []string, alpha float64, fillR, fillG, fillB, haloR, haloG, haloB float32) {
@@ -1680,6 +1725,7 @@ func (g *Game) drawTacticalMap(screen *ebiten.Image) {
 			})
 		}
 		drawFilledPolygon(screen, vertices, fill)
+		g.drawTacticalTileTexture(screen, &tile, vertices, points, scale)
 		edge := core.ScaleColor(fill, 0.72)
 		if tile.ID == g.tacticalTile {
 			edge = core.BlendColor(edge, color.RGBA{185, 239, 255, 255}, 0.45)
@@ -1689,6 +1735,52 @@ func (g *Game) drawTacticalMap(screen *ebiten.Image) {
 		g.drawTacticalTileDevice(screen, &tile, cx, cy, scale)
 	}
 	g.drawTacticalEntities(screen, tmap, cx, cy, scale)
+	g.drawTacticalTileIndicators(screen, tmap, cx, cy, scale)
+}
+
+func (g *Game) drawTacticalTileTexture(screen *ebiten.Image, tile *core.TacticalTile, vertices []ebiten.Vertex, localPoints []screenPoint, scale float64) {
+	texture := tacticalTextureForTile(tile)
+	if texture == nil || len(vertices) < 3 || len(localPoints) != len(vertices) || scale <= 0 {
+		return
+	}
+
+	bounds := texture.Bounds()
+	texW := float64(bounds.Dx())
+	texH := float64(bounds.Dy())
+	if texW == 0 || texH == 0 {
+		return
+	}
+
+	overlay := make([]ebiten.Vertex, len(vertices))
+	copy(overlay, vertices)
+	srcScale := scale * 1.15
+	texDX := bounds.Dx()
+	texDY := bounds.Dy()
+	if texDX <= 0 {
+		texDX = 1
+	}
+	if texDY <= 0 {
+		texDY = 1
+	}
+	offsetX := float64((tile.Q*29 + tile.R*17) % texDX)
+	offsetY := float64((tile.R*31 - tile.Q*13) % texDY)
+	alpha := tacticalTextureAlpha(tile)
+	for i := range overlay {
+		p := localPoints[i]
+		overlay[i].SrcX = float32((p.x/srcScale+0.5)*texW + offsetX)
+		overlay[i].SrcY = float32((p.y/srcScale+0.5)*texH + offsetY)
+		overlay[i].ColorR = 1
+		overlay[i].ColorG = 1
+		overlay[i].ColorB = 1
+		overlay[i].ColorA = alpha
+	}
+
+	indices := make([]uint16, 0, (len(overlay)-2)*3)
+	for i := 1; i < len(overlay)-1; i++ {
+		indices = append(indices, 0, uint16(i), uint16(i+1))
+	}
+	opts := &ebiten.DrawTrianglesOptions{Address: ebiten.AddressRepeat, Filter: ebiten.FilterNearest}
+	screen.DrawTriangles(overlay, indices, texture, opts)
 }
 
 func (g *Game) drawTacticalTileResourceGlyph(screen *ebiten.Image, tile *core.TacticalTile, cx, cy, scale float64) {
@@ -1707,6 +1799,11 @@ func (g *Game) drawTacticalTileResourceGlyph(screen *ebiten.Image, tile *core.Ta
 	glyphY := cy + g.tacticalPanY + tile.Center.Y*scale - scale*0.18
 	base := core.ResourceColor(tile.Resource)
 	shadow := color.RGBA{0, 0, 0, 74}
+
+	if sprite := tacticalResourceSprite(tile.Resource); sprite != nil {
+		drawCenteredSprite(screen, sprite, glyphX, glyphY, scale*0.54, scale*0.03, scale*0.05, 0.32, color.RGBA{})
+		return
+	}
 
 	drawDisc(screen, float32(glyphX+1.5), float32(glyphY+2.5), float32(scale*0.12), shadow)
 
@@ -1737,21 +1834,175 @@ func (g *Game) drawTacticalTileDevice(screen *ebiten.Image, tile *core.TacticalT
 
 	switch tile.Device.Kind {
 	case core.DeviceKindMiner:
-		def := core.DeviceDefinition(tile.Device.Kind)
-		shadow := color.RGBA{0, 0, 0, 84}
-		body := tacticalDeviceSignalColor(tile)
-		drill := color.RGBA{220, 178, 110, 255}
-		if tile.Device.SpecialStarter {
-			body = color.RGBA{236, 204, 98, 255}
-			drill = color.RGBA{92, 68, 18, 255}
-		}
-		drawDisc(screen, float32(centerX+2), float32(centerY+4), float32(scale*0.26), shadow)
-		drawDisc(screen, float32(centerX), float32(centerY-1), float32(scale*0.22), body)
-		drawFilledRect(screen, float32(centerX-scale*0.05), float32(centerY-scale*0.02), float32(scale*0.10), float32(scale*0.27), drill)
-		drawFilledRect(screen, float32(centerX-scale*0.16), float32(centerY-scale*0.15), float32(scale*0.32), float32(scale*0.08), body)
-		ix, iy := tacticalTileIndicatorAnchor(centerX, centerY, scale, 0)
-		g.drawPowerIndicator(screen, ix, iy, scale, tile.PowerBuffer, def.RunPowerCost)
+		g.drawMinerSprite(screen, tile, centerX, centerY, scale)
 	}
+}
+
+func (g *Game) drawTacticalTileIndicators(screen *ebiten.Image, tmap *core.TacticalMap, cx, cy, scale float64) {
+	if tmap == nil {
+		return
+	}
+	for i := range tmap.Tiles {
+		tile := &tmap.Tiles[i]
+		if tile.Device == nil || tile.Device.Kind != core.DeviceKindMiner {
+			continue
+		}
+		centerX := cx + g.tacticalPanX + tile.Center.X*scale
+		centerY := cy + g.tacticalPanY + tile.Center.Y*scale
+		ix, iy := tacticalTileIndicatorAnchor(centerX, centerY, scale, 0)
+		runCost := core.DeviceDefinition(tile.Device.Kind).RunPowerCost
+		g.drawPowerIndicator(screen, ix, iy, scale, tile.PowerBuffer, runCost)
+		rx, ry := tacticalTileIndicatorAnchor(centerX, centerY, scale, 3)
+		g.drawResourceIndicator(screen, rx, ry, scale, tile)
+	}
+}
+
+func (g *Game) drawMinerSprite(screen *ebiten.Image, tile *core.TacticalTile, centerX, centerY, scale float64) {
+	sprite := minerSpriteForTile(tile, g.animationTime)
+	if sprite == nil {
+		drawDisc(screen, float32(centerX+2), float32(centerY+4), float32(scale*0.26), color.RGBA{0, 0, 0, 84})
+		drawDisc(screen, float32(centerX), float32(centerY-1), float32(scale*0.22), tacticalDeviceSignalColor(tile))
+		drawFilledRect(screen, float32(centerX-scale*0.05), float32(centerY-scale*0.02), float32(scale*0.10), float32(scale*0.27), color.RGBA{220, 178, 110, 255})
+		drawFilledRect(screen, float32(centerX-scale*0.16), float32(centerY-scale*0.15), float32(scale*0.32), float32(scale*0.08), tacticalDeviceSignalColor(tile))
+		return
+	}
+
+	targetHeight := scale * 1.18
+	if tile != nil && tile.Device != nil && tile.Device.SpecialStarter {
+		drawDisc(screen, float32(centerX), float32(centerY+scale*0.10), float32(scale*0.32), color.RGBA{236, 204, 98, 92})
+	}
+	tint := color.RGBA{}
+	if tile != nil && tile.Device != nil && tile.Device.SpecialStarter {
+		tint = color.RGBA{255, 240, 194, 255}
+	}
+	drawCenteredSprite(screen, sprite, centerX-scale*0.12, centerY-1, targetHeight, scale*0.06, scale*0.09, 0.34, tint)
+}
+
+func minerSpriteForTile(tile *core.TacticalTile, animationTime float64) *ebiten.Image {
+	frame := 0
+	if minerWorking(tile) {
+		frame = 1 + int(animationTime*10)%3
+	}
+	if frame < 0 || frame >= len(minerSprites) {
+		return nil
+	}
+	return minerSprites[frame]
+}
+
+func minerWorking(tile *core.TacticalTile) bool {
+	if tile == nil || tile.Device == nil || tile.Device.Kind != core.DeviceKindMiner {
+		return false
+	}
+	if tile.Resource == core.ResourceNone || tile.ResourceRemaining <= 0 {
+		return false
+	}
+	runCost := core.DeviceDefinition(tile.Device.Kind).RunPowerCost
+	return runCost > 0 && tile.PowerBuffer >= runCost
+}
+
+func tacticalResourceSprite(resource core.ResourceType) *ebiten.Image {
+	switch resource {
+	case core.ResourceIronOre:
+		return resourceSprites[1]
+	case core.ResourceCopperOre:
+		return resourceSprites[2]
+	case core.ResourceCoal:
+		return resourceSprites[3]
+	default:
+		return nil
+	}
+}
+
+func (g *Game) drawResourceIndicator(screen *ebiten.Image, x, y, scale float64, tile *core.TacticalTile) {
+	if tile == nil || tile.ResourceRemaining <= 0 {
+		return
+	}
+	sprite := tacticalResourceSprite(tile.Resource)
+	if sprite == nil {
+		return
+	}
+
+	clr := resourceIndicatorColor(tile)
+	drawDisc(screen, float32(x+scale*0.01), float32(y+scale*0.02), float32(scale*0.18), color.RGBA{0, 0, 0, 88})
+	drawDisc(screen, float32(x), float32(y), float32(scale*0.16), clr)
+	drawCenteredSprite(screen, sprite, x, y, scale*0.34, scale*0.01, scale*0.01, 0.12, color.RGBA{})
+}
+
+func resourceIndicatorColor(tile *core.TacticalTile) color.RGBA {
+	if tile == nil {
+		return color.RGBA{92, 210, 118, 255}
+	}
+	capacity := tile.ResourceRichness * 120
+	if capacity <= 0 {
+		return color.RGBA{92, 210, 118, 255}
+	}
+	if tile.ResourceRemaining <= capacity*0.5 {
+		return color.RGBA{234, 200, 82, 255}
+	}
+	return color.RGBA{92, 210, 118, 255}
+}
+
+func tacticalEntitySprite(entity core.TacticalEntity, animationTime float64) *ebiten.Image {
+	frame := int(animationTime*7+float64(entity.ID)*0.7) % 4
+	if frame < 0 {
+		frame = 0
+	}
+	if entityDangerous(entity) {
+		return dangerOrganismSprites[frame]
+	}
+	return friendlyOrganismSprites[frame]
+}
+
+func entityDangerous(entity core.TacticalEntity) bool {
+	return entity.Fill.R > entity.Fill.G
+}
+
+func tacticalTextureForTile(tile *core.TacticalTile) *ebiten.Image {
+	if tile == nil {
+		return nil
+	}
+	switch tacticalTextureKind(tile) {
+	case 0:
+		return tacticalTextures[0]
+	case 1:
+		return tacticalTextures[1]
+	case 2:
+		return tacticalTextures[2]
+	case 3:
+		return tacticalTextures[3]
+	default:
+		return tacticalTextures[4]
+	}
+}
+
+func tacticalTextureKind(tile *core.TacticalTile) int {
+	if tile == nil {
+		return 4
+	}
+	// Older saves won't have Ocean persisted; fall back to the blue-water fill.
+	if tile.Ocean || int(tile.Fill.B) > int(tile.Fill.G)+20 {
+		return 0
+	}
+	switch {
+	case tile.Elevation > 0.82:
+		return 1
+	case tile.Moisture < 0.28:
+		return 2
+	case tile.Moisture > 0.66:
+		return 3
+	default:
+		return 4
+	}
+}
+
+func tacticalTextureAlpha(tile *core.TacticalTile) float32 {
+	if tile == nil {
+		return 0.24
+	}
+	if tacticalTextureKind(tile) == 0 {
+		return 0.30
+	}
+	return 0.24
 }
 
 func tacticalTileIndicatorAnchor(centerX, centerY, scale float64, slot int) (float64, float64) {
@@ -1769,18 +2020,15 @@ func tacticalTileIndicatorAnchor(centerX, centerY, scale float64, slot int) (flo
 }
 
 func (g *Game) drawPowerIndicator(screen *ebiten.Image, x, y, scale, powerBuffer, runCost float64) {
-	clr := powerIndicatorColor(powerBuffer, runCost)
-	drawDisc(screen, float32(x+1), float32(y+1.5), float32(scale*0.09), color.RGBA{0, 0, 0, 84})
-	drawDisc(screen, float32(x), float32(y), float32(scale*0.09), clr)
-	bolt := []screenPoint{
-		{x: x - scale*0.020, y: y - scale*0.085},
-		{x: x + scale*0.010, y: y - scale*0.020},
-		{x: x - scale*0.006, y: y - scale*0.020},
-		{x: x + scale*0.020, y: y + scale*0.080},
-		{x: x - scale*0.012, y: y + scale*0.014},
-		{x: x + scale*0.006, y: y + scale*0.014},
+	sprite := powerIndicatorSprite(powerBuffer, runCost)
+	if sprite == nil {
+		clr := powerIndicatorColor(powerBuffer, runCost)
+		g.drawLightningBolt(screen, x+scale*0.02, y+scale*0.02, scale*0.36, color.RGBA{0, 0, 0, 88})
+		g.drawLightningBolt(screen, x, y, scale*0.36, clr)
+		return
 	}
-	drawScreenPolygon(screen, bolt, color.RGBA{18, 20, 24, 240})
+
+	drawPowerIndicatorSprite(screen, sprite, x, y, scale)
 }
 
 func powerIndicatorColor(powerBuffer, runCost float64) color.RGBA {
@@ -1792,6 +2040,302 @@ func powerIndicatorColor(powerBuffer, runCost float64) color.RGBA {
 	default:
 		return color.RGBA{234, 200, 82, 255}
 	}
+}
+
+func (g *Game) drawLightningBolt(screen *ebiten.Image, x, y, size float64, clr color.RGBA) {
+	bolt := []screenPoint{
+		{x: x - size*0.30, y: y - size*0.62},
+		{x: x + size*0.04, y: y - size*0.18},
+		{x: x - size*0.10, y: y - size*0.18},
+		{x: x + size*0.28, y: y + size*0.62},
+		{x: x - size*0.02, y: y + size*0.10},
+		{x: x + size*0.12, y: y + size*0.10},
+	}
+	drawScreenPolygon(screen, bolt, clr)
+}
+
+func powerIndicatorSprite(powerBuffer, runCost float64) *ebiten.Image {
+	switch {
+	case powerBuffer <= 0.02:
+		return powerIndicatorSprites[0]
+	case runCost <= 0 || powerBuffer >= runCost:
+		return powerIndicatorSprites[2]
+	default:
+		return powerIndicatorSprites[1]
+	}
+}
+
+func drawPowerIndicatorSprite(screen, sprite *ebiten.Image, x, y, scale float64) {
+	bounds := sprite.Bounds()
+	if bounds.Dx() == 0 || bounds.Dy() == 0 {
+		return
+	}
+
+	targetHeight := scale * 0.84
+	scaleFactor := targetHeight / float64(bounds.Dy())
+	targetWidth := float64(bounds.Dx()) * scaleFactor
+	drawX := x - targetWidth/2
+	drawY := y - targetHeight/2
+
+	shadow := &ebiten.DrawImageOptions{}
+	shadow.GeoM.Scale(scaleFactor, scaleFactor)
+	shadow.GeoM.Translate(drawX+scale*0.03, drawY+scale*0.04)
+	shadow.ColorScale.Scale(0, 0, 0, 0.35)
+	screen.DrawImage(sprite, shadow)
+
+	op := &ebiten.DrawImageOptions{}
+	op.GeoM.Scale(scaleFactor, scaleFactor)
+	op.GeoM.Translate(drawX, drawY)
+	screen.DrawImage(sprite, op)
+}
+
+func drawCenteredSprite(screen, sprite *ebiten.Image, centerX, centerY, targetHeight, shadowDX, shadowDY, shadowAlpha float64, tint color.RGBA) {
+	if sprite == nil {
+		return
+	}
+	bounds := sprite.Bounds()
+	if bounds.Dx() == 0 || bounds.Dy() == 0 || targetHeight <= 0 {
+		return
+	}
+
+	scaleFactor := targetHeight / float64(bounds.Dy())
+	targetWidth := float64(bounds.Dx()) * scaleFactor
+	drawX := centerX - targetWidth/2
+	drawY := centerY - targetHeight/2
+
+	shadow := &ebiten.DrawImageOptions{}
+	shadow.GeoM.Scale(scaleFactor, scaleFactor)
+	shadow.GeoM.Translate(drawX+shadowDX, drawY+shadowDY)
+	shadow.ColorScale.Scale(0, 0, 0, float32(shadowAlpha))
+	screen.DrawImage(sprite, shadow)
+
+	op := &ebiten.DrawImageOptions{}
+	op.GeoM.Scale(scaleFactor, scaleFactor)
+	op.GeoM.Translate(drawX, drawY)
+	if tint.A > 0 {
+		op.ColorScale.Scale(float32(tint.R)/255, float32(tint.G)/255, float32(tint.B)/255, float32(tint.A)/255)
+	}
+	screen.DrawImage(sprite, op)
+}
+
+func initPowerIndicatorSprites() {
+	img, err := png.Decode(bytes.NewReader(powerIndicatorSpriteSheetPNG))
+	if err != nil {
+		log.Printf("power indicator sprite decode failed: %v", err)
+		return
+	}
+
+	cleaned := removeConnectedNeutralBackground(img)
+	bounds := cleaned.Bounds()
+	cellWidth := bounds.Dx() / 3
+	cellHeight := bounds.Dy() / 2
+	if cellWidth <= 0 || cellHeight <= 0 {
+		log.Printf("power indicator sprite sheet has invalid bounds: %v", bounds)
+		return
+	}
+
+	for i := 0; i < 3; i++ {
+		cellRect := image.Rect(i*cellWidth, 0, (i+1)*cellWidth, cellHeight)
+		cell := image.NewNRGBA(image.Rect(0, 0, cellRect.Dx(), cellRect.Dy()))
+		draw.Draw(cell, cell.Bounds(), cleaned, cellRect.Min, draw.Src)
+		trimmed := trimAlphaImage(cell)
+		if trimmed == nil {
+			continue
+		}
+		powerIndicatorSprites[i] = ebiten.NewImageFromImage(trimmed)
+	}
+}
+
+func initMinerSprites() {
+	img, err := png.Decode(bytes.NewReader(minerSpriteSheetPNG))
+	if err != nil {
+		log.Printf("miner sprite decode failed: %v", err)
+		return
+	}
+
+	bounds := img.Bounds()
+	cellWidth := bounds.Dx() / 4
+	cellHeight := bounds.Dy()
+	if cellWidth <= 0 || cellHeight <= 0 {
+		log.Printf("miner sprite sheet has invalid bounds: %v", bounds)
+		return
+	}
+
+	for i := 0; i < 4; i++ {
+		cellRect := image.Rect(i*cellWidth, 0, (i+1)*cellWidth, cellHeight)
+		cell := image.NewNRGBA(image.Rect(0, 0, cellRect.Dx(), cellRect.Dy()))
+		draw.Draw(cell, cell.Bounds(), img, cellRect.Min, draw.Src)
+		trimmed := trimAlphaImage(cell)
+		if trimmed == nil {
+			continue
+		}
+		minerSprites[i] = ebiten.NewImageFromImage(trimmed)
+	}
+}
+
+func initResourceSprites() {
+	img, err := png.Decode(bytes.NewReader(resourceSpriteSheetPNG))
+	if err != nil {
+		log.Printf("resource sprite decode failed: %v", err)
+		return
+	}
+	loadSpriteStripInto(img, resourceSprites[:], 4)
+}
+
+func initOrganismSprites() {
+	friendlyImg, err := png.Decode(bytes.NewReader(friendlyOrganismSheetPNG))
+	if err != nil {
+		log.Printf("friendly organism sprite decode failed: %v", err)
+	} else {
+		loadSpriteStripInto(friendlyImg, friendlyOrganismSprites[:], 4)
+	}
+
+	dangerImg, err := png.Decode(bytes.NewReader(dangerOrganismSheetPNG))
+	if err != nil {
+		log.Printf("danger organism sprite decode failed: %v", err)
+		return
+	}
+	loadSpriteStripInto(dangerImg, dangerOrganismSprites[:], 4)
+}
+
+func initTacticalTextures() {
+	img, err := png.Decode(bytes.NewReader(tacticalTextureAtlasPNG))
+	if err != nil {
+		log.Printf("tactical texture atlas decode failed: %v", err)
+		return
+	}
+	loadSpriteStripInto(img, tacticalTextures[:], 5)
+}
+
+func loadSpriteStripInto(img image.Image, target []*ebiten.Image, count int) {
+	if img == nil || count <= 0 || len(target) < count {
+		return
+	}
+	bounds := img.Bounds()
+	cellWidth := bounds.Dx() / count
+	cellHeight := bounds.Dy()
+	if cellWidth <= 0 || cellHeight <= 0 {
+		log.Printf("sprite strip has invalid bounds: %v", bounds)
+		return
+	}
+
+	for i := 0; i < count; i++ {
+		cellRect := image.Rect(i*cellWidth, 0, (i+1)*cellWidth, cellHeight)
+		cell := image.NewNRGBA(image.Rect(0, 0, cellRect.Dx(), cellRect.Dy()))
+		draw.Draw(cell, cell.Bounds(), img, cellRect.Min, draw.Src)
+		trimmed := trimAlphaImage(cell)
+		if trimmed == nil {
+			continue
+		}
+		target[i] = ebiten.NewImageFromImage(trimmed)
+	}
+}
+
+func removeConnectedNeutralBackground(src image.Image) *image.NRGBA {
+	bounds := src.Bounds()
+	dst := image.NewNRGBA(bounds)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			dst.Set(x, y, color.NRGBAModel.Convert(src.At(x, y)))
+		}
+	}
+
+	width := bounds.Dx()
+	height := bounds.Dy()
+	if width == 0 || height == 0 {
+		return dst
+	}
+
+	visited := make([]bool, width*height)
+	queue := make([]image.Point, 0, width*2+height*2)
+	push := func(x, y int) {
+		idx := (y-bounds.Min.Y)*width + (x - bounds.Min.X)
+		if visited[idx] || !isNeutralSpriteBackground(dst.NRGBAAt(x, y)) {
+			return
+		}
+		visited[idx] = true
+		queue = append(queue, image.Point{X: x, Y: y})
+	}
+
+	for x := bounds.Min.X; x < bounds.Max.X; x++ {
+		push(x, bounds.Min.Y)
+		push(x, bounds.Max.Y-1)
+	}
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		push(bounds.Min.X, y)
+		push(bounds.Max.X-1, y)
+	}
+
+	for head := 0; head < len(queue); head++ {
+		pt := queue[head]
+		pixel := dst.NRGBAAt(pt.X, pt.Y)
+		pixel.A = 0
+		dst.SetNRGBA(pt.X, pt.Y, pixel)
+
+		for _, step := range [...]image.Point{{X: 1}, {X: -1}, {Y: 1}, {Y: -1}} {
+			nx := pt.X + step.X
+			ny := pt.Y + step.Y
+			if nx < bounds.Min.X || nx >= bounds.Max.X || ny < bounds.Min.Y || ny >= bounds.Max.Y {
+				continue
+			}
+			push(nx, ny)
+		}
+	}
+
+	return dst
+}
+
+func isNeutralSpriteBackground(px color.NRGBA) bool {
+	maxCh := px.R
+	minCh := px.R
+	for _, ch := range [...]uint8{px.G, px.B} {
+		if ch > maxCh {
+			maxCh = ch
+		}
+		if ch < minCh {
+			minCh = ch
+		}
+	}
+	avg := (int(px.R) + int(px.G) + int(px.B)) / 3
+	return maxCh-minCh <= 18 && avg >= 214
+}
+
+func trimAlphaImage(src *image.NRGBA) image.Image {
+	bounds := src.Bounds()
+	minX := bounds.Max.X
+	minY := bounds.Max.Y
+	maxX := bounds.Min.X
+	maxY := bounds.Min.Y
+	found := false
+
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			if src.NRGBAAt(x, y).A == 0 {
+				continue
+			}
+			found = true
+			if x < minX {
+				minX = x
+			}
+			if y < minY {
+				minY = y
+			}
+			if x+1 > maxX {
+				maxX = x + 1
+			}
+			if y+1 > maxY {
+				maxY = y + 1
+			}
+		}
+	}
+	if !found {
+		return nil
+	}
+
+	trimmedBounds := image.Rect(0, 0, maxX-minX, maxY-minY)
+	trimmed := image.NewNRGBA(trimmedBounds)
+	draw.Draw(trimmed, trimmedBounds, src, image.Point{X: minX, Y: minY}, draw.Src)
+	return trimmed
 }
 
 func tacticalDeviceSignalColor(tile *core.TacticalTile) color.RGBA {
@@ -1846,7 +2390,13 @@ func (g *Game) drawTacticalDisassembleButton(screen *ebiten.Image) {
 	x, y, w, h := g.disassembleButtonRect()
 	drawRoundedRect(screen, float32(x), float32(y), float32(w), float32(h), 10, color.RGBA{112, 56, 52, 236})
 	drawRectOutline(screen, float32(x), float32(y), float32(w), float32(h), color.RGBA{236, 170, 160, 255})
-	ebitenutil.DebugPrintAt(screen, "DISASSEMBLE", int(x)+7, int(y)+12)
+	label := "DISASSEMBLE"
+	labelX := int(x) + 7
+	if tile.Device.SpecialStarter {
+		label = "PICK UP"
+		labelX = int(x) + 28
+	}
+	ebitenutil.DebugPrintAt(screen, label, labelX, int(y)+12)
 }
 
 func (g *Game) drawTacticalPlaceBuildButton(screen *ebiten.Image) {
@@ -1986,6 +2536,10 @@ func (g *Game) drawTacticalEntities(screen *ebiten.Image, tmap *core.TacticalMap
 		micro := tmap.MicroCells[entity.MicroCellID]
 		centerX := cx + g.tacticalPanX + micro.Center.X*tileScale
 		centerY := cy + g.tacticalPanY + micro.Center.Y*tileScale
+		if sprite := tacticalEntitySprite(entity, g.animationTime); sprite != nil {
+			drawCenteredSprite(screen, sprite, centerX, centerY, microScale*1.55, microScale*0.10, microScale*0.14, 0.34, color.RGBA{})
+			continue
+		}
 		drawDisc(screen, float32(centerX+microScale*0.16), float32(centerY+microScale*0.22), float32(microScale*0.46), color.RGBA{0, 0, 0, 70})
 		drawDisc(screen, float32(centerX), float32(centerY), float32(microScale*0.42), entity.Fill)
 	}
@@ -2365,17 +2919,79 @@ func (g *Game) inventoryMoreButtonRect(cardX, cardY float64) (float64, float64, 
 }
 
 func (g *Game) drawInventoryCard(screen *ebiten.Image, x, y, alpha float64) {
-	lines := g.inventoryCardLines()
 	w, h := g.inventoryCardSize()
 	drawRoundedRect(screen, float32(x), float32(y), float32(w), float32(h), 10, color.RGBA{8, 18, 32, uint8(170 * alpha)})
 	drawRectOutline(screen, float32(x), float32(y), float32(w), float32(h), color.RGBA{126, 176, 210, uint8(210 * alpha)})
-	g.drawAlphaDebugTextBlock(screen, x+12, y+12, lines, alpha)
+	g.drawAlphaDebugTextBlock(screen, x+12, y+12, []string{"INVENTORY"}, alpha)
+	rowY := y + 28
+	for _, resource := range visibleInventoryResources {
+		textX := int(x) + 30
+		if resourceHasMapIcon(resource) {
+			g.drawInventoryResourceIcon(screen, x+18, rowY+7, resource)
+		} else {
+			textX = int(x) + 18
+		}
+		ebitenutil.DebugPrintAt(screen, fmt.Sprintf("%s %d", resourceShortLabel(resource), g.inventory[resource]), textX, int(rowY))
+		rowY += 16
+	}
+	power := 0.0
+	powerRunCost := 0.0
+	if tile := g.currentTacticalTile(); tile != nil {
+		power = tile.PowerBuffer
+		if tile.Device != nil {
+			powerRunCost = core.DeviceDefinition(tile.Device.Kind).RunPowerCost
+		}
+	}
+	g.drawInventoryPowerIcon(screen, x+18, rowY+7, power, powerRunCost)
+	ebitenutil.DebugPrintAt(screen, fmt.Sprintf("power   %.3f", power), int(x)+30, int(rowY))
 	if g.inventoryHasOverflow() {
 		bx, by, bw, bh := g.inventoryMoreButtonRect(x, y)
 		drawRoundedRect(screen, float32(bx), float32(by), float32(bw), float32(bh), 6, color.RGBA{36, 56, 84, uint8(220 * alpha)})
 		drawRectOutline(screen, float32(bx), float32(by), float32(bw), float32(bh), color.RGBA{146, 196, 230, uint8(220 * alpha)})
 		ebitenutil.DebugPrintAt(screen, "...", int(bx)+8, int(by)+5)
 	}
+}
+
+func (g *Game) drawInventoryPowerIcon(screen *ebiten.Image, x, y, powerBuffer, runCost float64) {
+	sprite := powerIndicatorSprite(powerBuffer, runCost)
+	if sprite == nil {
+		g.drawLightningBolt(screen, x, y, 11, color.RGBA{232, 210, 92, 255})
+		return
+	}
+	drawPowerIndicatorSprite(screen, sprite, x, y, 15)
+}
+
+func (g *Game) drawInventoryResourceIcon(screen *ebiten.Image, cx, cy float64, resource core.ResourceType) {
+	if resource != core.ResourceStone {
+		if sprite := tacticalResourceSprite(resource); sprite != nil {
+			drawCenteredSprite(screen, sprite, cx, cy, 13, 1, 1, 0.24, color.RGBA{})
+			return
+		}
+	}
+	base := core.ResourceColor(resource)
+	switch resource {
+	case core.ResourceStone:
+		return
+	case core.ResourceIronIngot:
+		drawRoundedRect(screen, float32(cx-6), float32(cy-3), 12, 6, 2, base)
+	case core.ResourceCopperIngot:
+		drawRoundedRect(screen, float32(cx-6), float32(cy-3), 12, 6, 2, base)
+		drawFilledRect(screen, float32(cx-4), float32(cy-1), 8, 2, color.RGBA{255, 255, 255, 48})
+	case core.ResourceCrystal:
+		verts := []ebiten.Vertex{
+			{DstX: float32(cx), DstY: float32(cy - 5)},
+			{DstX: float32(cx + 4), DstY: float32(cy)},
+			{DstX: float32(cx), DstY: float32(cy + 5)},
+			{DstX: float32(cx - 4), DstY: float32(cy)},
+		}
+		drawFilledPolygon(screen, verts, base)
+	default:
+		drawDisc(screen, float32(cx), float32(cy), 3, base)
+	}
+}
+
+func resourceHasMapIcon(resource core.ResourceType) bool {
+	return resource != core.ResourceStone && tacticalResourceSprite(resource) != nil
 }
 
 func (g *Game) drawResearchView(screen *ebiten.Image) {

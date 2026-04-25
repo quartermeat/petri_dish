@@ -13,12 +13,15 @@ import (
 const (
 	perkChoiceCount       = 3
 	perkChoiceTapCooldown = 1.5 // seconds before taps register, so heated-tap players can read
+	perkChoiceSelectHold  = 0.18
 )
 
 type perkChoiceState struct {
-	stageID  string
-	perks    []core.PerkDef
-	cooldown float64
+	stageID       string
+	perks         []core.PerkDef
+	cooldown      float64
+	selectedIndex int
+	selectedHold  float64
 }
 
 // productionMods builds the per-tick multipliers + productive-power
@@ -145,9 +148,10 @@ func (g *Game) openPerkChoice(stage core.ProgressStage) {
 		pool = pool[:perkChoiceCount]
 	}
 	g.perkChoice = &perkChoiceState{
-		stageID:  stage.ID,
-		perks:    pool,
-		cooldown: perkChoiceTapCooldown,
+		stageID:       stage.ID,
+		perks:         pool,
+		cooldown:      perkChoiceTapCooldown,
+		selectedIndex: -1,
 	}
 }
 
@@ -163,6 +167,10 @@ func (g *Game) applyPerk(def core.PerkDef) {
 					g.inventory = map[core.ResourceType]int{}
 				}
 				g.inventory[def.Resource] += amount
+				if g.minedTotals == nil {
+					g.minedTotals = map[core.ResourceType]int{}
+				}
+				g.minedTotals[def.Resource] += amount
 			}
 		}
 	} else {
@@ -253,6 +261,13 @@ func (g *Game) handlePerkChoiceInput() {
 	if g.perkChoice == nil {
 		return
 	}
+	if g.perkChoice.selectedIndex >= 0 {
+		g.perkChoice.selectedHold -= 1.0 / 60.0
+		if g.perkChoice.selectedHold <= 0 && g.perkChoice.selectedIndex < len(g.perkChoice.perks) {
+			g.applyPerk(g.perkChoice.perks[g.perkChoice.selectedIndex])
+		}
+		return
+	}
 	if g.perkChoice.cooldown > 0 {
 		g.perkChoice.cooldown -= 1.0 / 60.0
 		return
@@ -275,8 +290,8 @@ func (g *Game) handlePerkChoiceInput() {
 	for i := range g.perkChoice.perks {
 		cx, cy, cw, ch := g.perkCardRect(i)
 		if g.pointInRect(float64(x), float64(y), cx, cy, cw, ch) {
-			def := g.perkChoice.perks[i]
-			g.applyPerk(def)
+			g.perkChoice.selectedIndex = i
+			g.perkChoice.selectedHold = perkChoiceSelectHold
 			return
 		}
 	}
@@ -314,18 +329,36 @@ func (g *Game) drawPerkChoice(screen *ebiten.Image) {
 		cx, cy, cw, ch := g.perkCardRect(i)
 		bg := color.RGBA{18, 30, 48, 244}
 		edge := color.RGBA{146, 196, 230, 255}
+		text := color.RGBA{232, 240, 248, 255}
 		if def.OneShot {
 			bg = color.RGBA{34, 28, 20, 244}
 			edge = color.RGBA{230, 188, 120, 255}
+			text = color.RGBA{248, 234, 206, 255}
+		}
+		selected := i == g.perkChoice.selectedIndex
+		if selected {
+			if def.OneShot {
+				bg = color.RGBA{92, 62, 20, 252}
+				edge = color.RGBA{255, 224, 148, 255}
+				text = color.RGBA{255, 244, 222, 255}
+			} else {
+				bg = color.RGBA{30, 68, 92, 252}
+				edge = color.RGBA{182, 238, 255, 255}
+				text = color.RGBA{244, 252, 255, 255}
+			}
+			drawRoundedRect(screen, float32(cx-2), float32(cy-2), float32(cw+4), float32(ch+4), 14, color.RGBA{255, 255, 255, 26})
 		}
 		drawRoundedRect(screen, float32(cx), float32(cy), float32(cw), float32(ch), 12, bg)
 		drawRectOutline(screen, float32(cx), float32(cy), float32(cw), float32(ch), edge)
-		ebitenutil.DebugPrintAt(screen, def.Title, int(cx)+16, int(cy)+12)
-		ebitenutil.DebugPrintAt(screen, def.Description, int(cx)+16, int(cy)+36)
+		g.drawTintedDebugTextBlock(screen, cx+16, cy+12, []string{def.Title}, 1, float32(text.R)/255, float32(text.G)/255, float32(text.B)/255)
+		g.drawTintedDebugTextBlock(screen, cx+16, cy+36, []string{def.Description}, 1, float32(text.R)/255, float32(text.G)/255, float32(text.B)/255)
 		tag := "permanent"
 		if def.OneShot {
 			tag = "one-shot"
 		}
-		ebitenutil.DebugPrintAt(screen, tag, int(cx)+16, int(cy)+58)
+		if selected {
+			tag = "selected"
+		}
+		g.drawTintedDebugTextBlock(screen, cx+16, cy+58, []string{tag}, 1, float32(text.R)/255, float32(text.G)/255, float32(text.B)/255)
 	}
 }
