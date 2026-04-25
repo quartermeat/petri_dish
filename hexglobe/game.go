@@ -1416,7 +1416,7 @@ func (g *Game) drawSettingsPanel(screen *ebiten.Image) {
 	x := float64(g.screenWidth)*0.5 - 156
 	y := 88.0
 	w := 312.0
-	h := 300.0
+	h := 288.0
 	drawRoundedRect(screen, float32(x), float32(y), float32(w), float32(h), 14, color.RGBA{12, 20, 32, 232})
 	drawRectOutline(screen, float32(x), float32(y), float32(w), float32(h), color.RGBA{126, 176, 210, 255})
 	g.drawAlphaDebugTextBlock(screen, x+18, y+18, []string{
@@ -1424,7 +1424,7 @@ func (g *Game) drawSettingsPanel(screen *ebiten.Image) {
 		"Recipe Book",
 		"Swipe left or right.",
 	}, 1)
-	g.drawRecipeBookCard(screen, x+18, y+76, w-36, 182)
+	g.drawRecipeBookCard(screen, x+18, y+76, w-36, 168)
 
 	rx, ry, rw, rh := g.regenerateButtonRect()
 	g.drawAlphaDebugTextBlock(screen, rx-2, ry-38, []string{
@@ -1448,7 +1448,10 @@ func (g *Game) drawRecipeBookCard(screen *ebiten.Image, x, y, w, h float64) {
 		card.subtitle,
 	}, 1)
 	g.drawRecipeBookMiner(screen, x+18, y+48)
-	g.drawRecipeBookCardNotes(screen, x+170, y+52, card.lines)
+	g.drawAlphaDebugTextBlock(screen, x+16, y+152, []string{
+		card.lines[len(card.lines)-2],
+		card.lines[len(card.lines)-1],
+	}, 1)
 	if len(cards) > 1 {
 		g.drawSettingsPager(screen, x+w*0.5, y+h-14, len(cards), g.settingsCard)
 	}
@@ -1485,14 +1488,6 @@ func (g *Game) drawRecipeBookMiner(screen *ebiten.Image, x, y float64) {
 		py := y + float64(entry.y)*cell + 4
 		drawFilledRect(screen, float32(px), float32(py), float32(cell-10), float32(cell-10), core.DevicePartColor(entry.part))
 	}
-
-	g.drawAlphaDebugTextBlock(screen, x+gridW+18, y+8, []string{
-		"M motor",
-		"D drill",
-		"F frame",
-		"O output",
-		"H crank",
-	}, 1)
 	ebitenutil.DebugPrintAt(screen, "M", int(x+2*cell+8), int(y+1*cell+6))
 	ebitenutil.DebugPrintAt(screen, "F", int(x+1*cell+8), int(y+2*cell+6))
 	ebitenutil.DebugPrintAt(screen, "D", int(x+2*cell+8), int(y+2*cell+6))
@@ -1509,19 +1504,6 @@ func (g *Game) drawSettingsPager(screen *ebiten.Image, cx, cy float64, total, cu
 		}
 		drawDisc(screen, float32(cx+float64(i-total/2)*14), float32(cy), 3, clr)
 	}
-}
-
-func (g *Game) drawRecipeBookCardNotes(screen *ebiten.Image, x, y float64, lines []string) {
-	filtered := make([]string, 0, len(lines))
-	for _, line := range lines {
-		if line != "" {
-			filtered = append(filtered, line)
-		}
-	}
-	if len(filtered) == 0 {
-		return
-	}
-	g.drawAlphaDebugTextBlock(screen, x, y, filtered, 1)
 }
 
 func (g *Game) handleSettingsInput() {
@@ -1819,6 +1801,7 @@ func (g *Game) settingsRecipeCards() []recipeCard {
 				"O output",
 				"H crank",
 				"Tap miner to crank.",
+				"Use the button below for regen.",
 			},
 		},
 	}
