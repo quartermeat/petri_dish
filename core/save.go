@@ -27,6 +27,7 @@ type SaveData struct {
 	Inventory         map[ResourceType]int `json:"inventory"`
 	PartInventory     map[DevicePart]int   `json:"partInventory,omitempty"`
 	StarterMinerCount *int                 `json:"starterMinerCount,omitempty"`
+	StarterGateCount  *int                 `json:"starterGateCount,omitempty"`
 	TutorialSeen      []string             `json:"tutorialSeen,omitempty"`
 	Camera            SavedCamera          `json:"camera"`
 	Selected          int                  `json:"selectedCell"`

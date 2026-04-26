@@ -28,9 +28,11 @@ type perkChoiceState struct {
 // accumulator from the player's currently-active perks.
 func (g *Game) productionMods() *core.ProductionMods {
 	mods := &core.ProductionMods{
-		OutputMul:    1,
-		PowerCostMul: 1,
-		DecayMul:     1,
+		OutputMul:        1,
+		PowerCostMul:     1,
+		SmelterOutputMul: 1,
+		SmelterPowerMul:  1,
+		DecayMul:         1,
 	}
 	for _, perkID := range g.activePerks {
 		def, ok := g.perks.Perk(perkID)
@@ -42,12 +44,19 @@ func (g *Game) productionMods() *core.ProductionMods {
 			mods.OutputMul *= 1 + def.Magnitude
 		case core.PerkPowerEfficiency:
 			mods.PowerCostMul *= 1 - def.Magnitude
+		case core.PerkSmelterOutput:
+			mods.SmelterOutputMul *= 1 + def.Magnitude
+		case core.PerkSmelterPower:
+			mods.SmelterPowerMul *= 1 - def.Magnitude
 		case core.PerkBufferDecay:
 			mods.DecayMul *= 1 - def.Magnitude
 		}
 	}
 	if mods.PowerCostMul < 0 {
 		mods.PowerCostMul = 0
+	}
+	if mods.SmelterPowerMul < 0 {
+		mods.SmelterPowerMul = 0
 	}
 	if mods.DecayMul < 0 {
 		mods.DecayMul = 0
@@ -101,30 +110,18 @@ func (g *Game) maybeTriggerPerkChoice() {
 	if g.perksAwarded != nil {
 		awarded = g.perksAwarded[stage.ID]
 	}
-	if awarded >= len(stage.PerkPowerThresholds) {
-		return
-	}
-	threshold := stage.PerkPowerThresholds[awarded]
+	threshold := nextPerkThreshold(stage.PerkPowerThresholds, awarded)
 	if g.stagePowerSpent[stage.ID] < threshold {
 		return
 	}
 	g.openPerkChoice(stage)
 }
 
-// openPerkChoice picks up to perkChoiceCount perks from the stage pool,
-// excluding any already-active permanent perks, and shows the picker.
+// openPerkChoice picks up to perkChoiceCount perks from the stage pool.
+// Permanent perks can be picked repeatedly and stack cumulatively.
 func (g *Game) openPerkChoice(stage core.ProgressStage) {
-	owned := map[string]bool{}
-	for _, id := range g.activePerks {
-		if def, ok := g.perks.Perk(id); ok && !def.OneShot {
-			owned[id] = true
-		}
-	}
 	pool := make([]core.PerkDef, 0, len(stage.PerkPool))
 	for _, id := range stage.PerkPool {
-		if owned[id] {
-			continue
-		}
 		def, ok := g.perks.Perk(id)
 		if !ok {
 			continue
@@ -206,14 +203,29 @@ func (g *Game) perkProgress() (float64, float64, bool) {
 	if g.perksAwarded != nil {
 		awarded = g.perksAwarded[stage.ID]
 	}
-	if awarded >= len(stage.PerkPowerThresholds) {
-		return 0, 0, false
-	}
 	spent := 0.0
 	if g.stagePowerSpent != nil {
 		spent = g.stagePowerSpent[stage.ID]
 	}
-	return spent, stage.PerkPowerThresholds[awarded], true
+	return spent, nextPerkThreshold(stage.PerkPowerThresholds, awarded), true
+}
+
+func nextPerkThreshold(thresholds []float64, awarded int) float64 {
+	if len(thresholds) == 0 {
+		return 0
+	}
+	if awarded < len(thresholds) {
+		return thresholds[awarded]
+	}
+	if len(thresholds) == 1 {
+		return thresholds[0] * float64(awarded+1)
+	}
+	last := thresholds[len(thresholds)-1]
+	step := last - thresholds[len(thresholds)-2]
+	if step <= 0 {
+		step = last
+	}
+	return last + step*float64(awarded-len(thresholds)+1)
 }
 
 // drawPerkProgressCard renders a small "PERK" meter at (x, y). Returns the

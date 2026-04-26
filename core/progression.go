@@ -4,7 +4,9 @@ type GoalKind string
 
 const (
 	GoalMineResource       GoalKind = "mine_resource"
+	GoalProduceResource    GoalKind = "produce_resource"
 	GoalDiscoverResource   GoalKind = "discover_resource"
+	GoalDiscoverRecipe     GoalKind = "discover_recipe"
 	GoalBuildDevice        GoalKind = "build_device"
 	GoalPlaceStarterUnit   GoalKind = "place_starter_unit"
 	GoalRecoverStarterUnit GoalKind = "recover_starter_unit"
@@ -14,6 +16,7 @@ type ProgressGoal struct {
 	Kind     GoalKind     `json:"kind"`
 	Resource ResourceType `json:"resource,omitempty"`
 	Device   DeviceKind   `json:"device,omitempty"`
+	RecipeID string       `json:"recipeID,omitempty"`
 	Amount   int          `json:"amount"`
 	Label    string       `json:"label"`
 }
@@ -74,6 +77,8 @@ const (
 	PerkCrankPower      PerkKind = "crank_power"      // +Magnitude (fraction) added to crank input per tap
 	PerkMinerOutput     PerkKind = "miner_output"     // +Magnitude (fraction) added to miner output rate
 	PerkPowerEfficiency PerkKind = "power_efficiency" // -Magnitude (fraction) of miner power consumption
+	PerkSmelterOutput   PerkKind = "smelter_output"   // +Magnitude (fraction) added to smelter output rate
+	PerkSmelterPower    PerkKind = "smelter_power"    // -Magnitude (fraction) of smelter power consumption
 	PerkBufferDecay     PerkKind = "buffer_decay"     // -Magnitude (fraction) of buffer decay rate
 	PerkResourceGift    PerkKind = "resource_gift"    // one-shot: add Magnitude units of Resource
 )
@@ -161,18 +166,56 @@ func DefaultProgressionBook() *ProgressionBook {
 				KnownRecipes: []string{
 					"smelter",
 				},
+				PerkPowerThresholds: []float64{
+					80,
+					220,
+					420,
+				},
+				PerkPool: []string{
+					"hot-furnace",
+					"blast-draft",
+					"clean-burn",
+					"insulated-bricks",
+					"coal-cache",
+					"iron-plate-cache",
+					"copper-plate-cache",
+				},
 				Goals: []ProgressGoal{
 					{
-						Kind:     GoalMineResource,
-						Label:    "mine copper ore",
-						Resource: ResourceCopperOre,
-						Amount:   20,
+						Kind:     GoalDiscoverResource,
+						Label:    "find coal",
+						Resource: ResourceCoal,
+						Amount:   1,
 					},
 					{
 						Kind:     GoalMineResource,
 						Label:    "mine coal",
 						Resource: ResourceCoal,
 						Amount:   8,
+					},
+					{
+						Kind:     GoalMineResource,
+						Label:    "mine copper ore",
+						Resource: ResourceCopperOre,
+						Amount:   3,
+					},
+					{
+						Kind:     GoalDiscoverRecipe,
+						Label:    "discover smelter",
+						RecipeID: "smelter",
+						Amount:   1,
+					},
+					{
+						Kind:   GoalBuildDevice,
+						Label:  "build smelter",
+						Device: DeviceKindSmelter,
+						Amount: 1,
+					},
+					{
+						Kind:     GoalProduceResource,
+						Label:    "make iron plate",
+						Resource: ResourceIronIngot,
+						Amount:   1,
 					},
 				},
 			},
@@ -196,9 +239,10 @@ func DefaultRecipeBook() *RecipeBook {
 				Title:   "Frame",
 				Kind:    RecipePart,
 				Part:    DevicePartFrame,
-				StageID: "bootstrap",
+				StageID: "smelting",
 				Ingredients: []RecipeIngredient{
-					{Resource: ResourceStone, Amount: 2},
+					{Resource: ResourceIronIngot, Amount: 2},
+					{Resource: ResourceStone, Amount: 1},
 				},
 			},
 			"drill": {
@@ -272,6 +316,7 @@ func DefaultRecipeBook() *RecipeBook {
 				ID:      "smelter",
 				Title:   "Smelter",
 				Kind:    RecipeDevice,
+				Device:  DeviceKindSmelter,
 				StageID: "smelting",
 				Pattern: []RecipeCell{
 					{X: 2, Y: 2, Part: DevicePartMotor},
@@ -286,7 +331,7 @@ func DefaultRecipeBook() *RecipeBook {
 			},
 			"iron-ingot": {
 				ID:      "iron-ingot",
-				Title:   "Iron Ingot",
+				Title:   "Iron Plate",
 				Kind:    RecipePart,
 				StageID: "smelting",
 				Ingredients: []RecipeIngredient{
@@ -296,7 +341,7 @@ func DefaultRecipeBook() *RecipeBook {
 			},
 			"copper-ingot": {
 				ID:      "copper-ingot",
-				Title:   "Copper Ingot",
+				Title:   "Copper Plate",
 				Kind:    RecipePart,
 				StageID: "smelting",
 				Ingredients: []RecipeIngredient{
@@ -397,6 +442,68 @@ func DefaultPerkBook() *PerkBook {
 				StageID:     "bootstrap",
 				Resource:    ResourceIronOre,
 				Magnitude:   2,
+				OneShot:     true,
+			},
+			"hot-furnace": {
+				ID:          "hot-furnace",
+				Title:       "Hot Furnace",
+				Description: "Smelters produce 25% faster.",
+				Kind:        PerkSmelterOutput,
+				StageID:     "smelting",
+				Magnitude:   0.25,
+			},
+			"blast-draft": {
+				ID:          "blast-draft",
+				Title:       "Blast Draft",
+				Description: "Smelters produce 50% faster.",
+				Kind:        PerkSmelterOutput,
+				StageID:     "smelting",
+				Magnitude:   0.50,
+			},
+			"clean-burn": {
+				ID:          "clean-burn",
+				Title:       "Clean Burn",
+				Description: "Smelters use 20% less power.",
+				Kind:        PerkSmelterPower,
+				StageID:     "smelting",
+				Magnitude:   0.20,
+			},
+			"insulated-bricks": {
+				ID:          "insulated-bricks",
+				Title:       "Insulated Bricks",
+				Description: "Power decays 35% slower.",
+				Kind:        PerkBufferDecay,
+				StageID:     "smelting",
+				Magnitude:   0.35,
+			},
+			"coal-cache": {
+				ID:          "coal-cache",
+				Title:       "Coal Cache",
+				Description: "+5 coal now.",
+				Kind:        PerkResourceGift,
+				StageID:     "smelting",
+				Resource:    ResourceCoal,
+				Magnitude:   5,
+				OneShot:     true,
+			},
+			"iron-plate-cache": {
+				ID:          "iron-plate-cache",
+				Title:       "Iron Plates",
+				Description: "+3 iron plates now.",
+				Kind:        PerkResourceGift,
+				StageID:     "smelting",
+				Resource:    ResourceIronIngot,
+				Magnitude:   3,
+				OneShot:     true,
+			},
+			"copper-plate-cache": {
+				ID:          "copper-plate-cache",
+				Title:       "Copper Plates",
+				Description: "+3 copper plates now.",
+				Kind:        PerkResourceGift,
+				StageID:     "smelting",
+				Resource:    ResourceCopperIngot,
+				Magnitude:   3,
 				OneShot:     true,
 			},
 		},

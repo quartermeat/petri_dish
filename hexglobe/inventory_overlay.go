@@ -27,14 +27,6 @@ var fullInventoryResources = []core.ResourceType{
 	core.ResourceCrystal,
 }
 
-var fullInventoryParts = []core.DevicePart{
-	core.DevicePartFrame,
-	core.DevicePartDrill,
-	core.DevicePartMotor,
-	core.DevicePartOutput,
-	core.DevicePartHandCrank,
-}
-
 func (g *Game) inventoryOverlayActive() bool {
 	return g.inventoryOverlay != nil
 }
@@ -140,33 +132,9 @@ func (g *Game) drawInventoryOverlay(screen *ebiten.Image) {
 		ebitenutil.DebugPrintAt(screen, fmt.Sprintf("%-12s %d", resourceShortLabel(r), g.inventory[r]), labelX, int(rowY))
 		rowY += 18
 	}
-
-	rowY += 12
-	g.drawInventorySectionHeader(screen, "PARTS", textX, rowY)
-	rowY += 22
-	for _, part := range fullInventoryParts {
-		ebitenutil.DebugPrintAt(screen, fmt.Sprintf("%-12s %d", partShortLabel(part), g.partInventory[part]), int(textX), int(rowY))
-		rowY += 18
-	}
 }
 
 func (g *Game) drawInventorySectionHeader(screen *ebiten.Image, label string, x, y float64) {
 	ebitenutil.DebugPrintAt(screen, label, int(x), int(y))
 	drawFilledRect(screen, float32(x), float32(y+14), 80, 1, color.RGBA{146, 196, 230, 200})
-}
-
-func partShortLabel(part core.DevicePart) string {
-	switch part {
-	case core.DevicePartFrame:
-		return "frame"
-	case core.DevicePartDrill:
-		return "drill"
-	case core.DevicePartMotor:
-		return "motor"
-	case core.DevicePartOutput:
-		return "output"
-	case core.DevicePartHandCrank:
-		return "crank"
-	}
-	return "part"
 }
