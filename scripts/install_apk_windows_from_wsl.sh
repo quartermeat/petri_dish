@@ -7,7 +7,7 @@ PACKAGE_NAME="${1:-com.hexglobe}"
 LAUNCH_ACTIVITY="${2:-com.hexglobe.MainActivity}"
 SHOW_LOGS_SECS="${SHOW_LOGS_SECS:-6}"
 ADB_WAIT_SECS="${ADB_WAIT_SECS:-20}"
-LOG_FILTER_REGEX="${LOG_FILTER_REGEX:-HexGlobe|AndroidRuntime|Go|ebiten|FATAL|panic}"
+LOG_FILTER_REGEX="${LOG_FILTER_REGEX:-Helios|AndroidRuntime|Go|ebiten|FATAL|panic}"
 
 source "/home/jerem/work/rewind/CODEX_rewind/scripts/lib_local_dev.sh"
 
@@ -75,6 +75,11 @@ INSTALL_OUT="$(adb_cmd install -r "${INSTALL_APK_PATH}" 2>&1)" || true
 if printf '%s\n' "${INSTALL_OUT}" | grep -Eqi "device offline|device still authorizing|unauthorized"; then
   echo "adb reported device offline; retrying once after wait..."
   timeout "${ADB_WAIT_SECS}" "${ADB_EXE}" "${ADB_SERIAL_FLAG[@]}" wait-for-device >/dev/null 2>&1 || true
+  INSTALL_OUT="$(adb_cmd install -r "${INSTALL_APK_PATH}" 2>&1)" || true
+fi
+if printf '%s\n' "${INSTALL_OUT}" | grep -Eqi "INSTALL_FAILED_UPDATE_INCOMPATIBLE|INSTALL_FAILED_VERSION_DOWNGRADE"; then
+  echo "Existing ${PACKAGE_NAME} install is incompatible; uninstalling and retrying..."
+  adb_cmd uninstall "${PACKAGE_NAME}" || true
   INSTALL_OUT="$(adb_cmd install -r "${INSTALL_APK_PATH}" 2>&1)" || true
 fi
 printf '%s\n' "${INSTALL_OUT}"

@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ANDROID_DIR="${ROOT_DIR}/android"
 LOCAL_EBITEN_DIR="/home/jerem/work/rewind/CODEX_rewind/third_party/ebiten"
 LOCAL_EBITENMOBILE_BIN="${ROOT_DIR}/.tools/ebitenmobile"
-AAR_PATH="${ANDROID_DIR}/app/libs/HexGlobe.aar"
+AAR_PATH="${ANDROID_DIR}/app/libs/Helios.aar"
 
 source "/home/jerem/work/rewind/CODEX_rewind/scripts/lib_local_dev.sh"
 rewindecho_setup_local_build_env "${ROOT_DIR}"
@@ -26,6 +26,7 @@ export ANDROID_NDK_HOME="${ANDROID_NDK_DIR}"
 export ANDROID_NDK_ROOT="${ANDROID_NDK_DIR}"
 
 mkdir -p "${ANDROID_DIR}/app/libs" "${ROOT_DIR}/.tools"
+rm -f "${ANDROID_DIR}/app/libs/HexGlobe.aar" "${ANDROID_DIR}/app/libs/HexGlobe-sources.jar"
 
 if [[ -f "${LOCAL_EBITEN_DIR}/go.mod" ]]; then
   echo "Building local ebitenmobile from ${LOCAL_EBITEN_DIR}..."

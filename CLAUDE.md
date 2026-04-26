@@ -1,4 +1,4 @@
-# CLAUDE.md — Hex Globe
+# CLAUDE.md — Helios
 
 Project guidance for Claude Code / Codex agents working in this repo.
 
@@ -32,7 +32,7 @@ If the user explicitly asks for code changes in a session, treat that as a one-o
 | `hexglobe/` | Ebiten `Game` — loop, projection, input, draw. |
 | `mobile/` | gomobile bridge (`mobile.SetGame(hexglobe.NewGame())`). |
 | `main.go` | `!android` desktop entry. |
-| `android/` | Gradle wrapper app consuming the generated `HexGlobe.aar`. |
+| `android/` | Gradle wrapper app consuming the generated `Helios.aar`. |
 | `scripts/` | WSL build / install helpers. |
 
 ## Key files

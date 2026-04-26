@@ -5,6 +5,7 @@ type GoalKind string
 const (
 	GoalMineResource       GoalKind = "mine_resource"
 	GoalProduceResource    GoalKind = "produce_resource"
+	GoalExportResource     GoalKind = "export_resource"
 	GoalDiscoverResource   GoalKind = "discover_resource"
 	GoalDiscoverRecipe     GoalKind = "discover_recipe"
 	GoalBuildDevice        GoalKind = "build_device"
@@ -51,9 +52,10 @@ type RecipeIngredient struct {
 }
 
 type RecipeCell struct {
-	X    int        `json:"x"`
-	Y    int        `json:"y"`
-	Part DevicePart `json:"part"`
+	X      int        `json:"x"`
+	Y      int        `json:"y"`
+	Part   DevicePart `json:"part,omitempty"`
+	Device DeviceKind `json:"device,omitempty"`
 }
 
 type RecipeDef struct {
@@ -132,13 +134,13 @@ func DefaultProgressionBook() *ProgressionBook {
 				Goals: []ProgressGoal{
 					{
 						Kind:   GoalPlaceStarterUnit,
-						Label:  "place MUG",
-						Device: DeviceKindMiner,
+						Label:  "place GATE",
+						Device: DeviceKindGate,
 						Amount: 1,
 					},
 					{
-						Kind:   GoalRecoverStarterUnit,
-						Label:  "pick up MUG",
+						Kind:   GoalPlaceStarterUnit,
+						Label:  "place MUG",
 						Device: DeviceKindMiner,
 						Amount: 1,
 					},
@@ -234,6 +236,7 @@ func DefaultProgressionBook() *ProgressionBook {
 				},
 				KnownRecipes: []string{
 					"generator",
+					"miner",
 				},
 				PerkPowerThresholds: []float64{
 					120,
@@ -262,6 +265,18 @@ func DefaultProgressionBook() *ProgressionBook {
 						Amount: 1,
 					},
 					{
+						Kind:     GoalDiscoverRecipe,
+						Label:    "discover miner",
+						RecipeID: "miner",
+						Amount:   1,
+					},
+					{
+						Kind:   GoalBuildDevice,
+						Label:  "build miner",
+						Device: DeviceKindMiner,
+						Amount: 1,
+					},
+					{
 						Kind:     GoalMineResource,
 						Label:    "mine coal",
 						Resource: ResourceCoal,
@@ -272,6 +287,39 @@ func DefaultProgressionBook() *ProgressionBook {
 						Label:    "make iron plates",
 						Resource: ResourceIronIngot,
 						Amount:   10,
+					},
+				},
+			},
+			"mechanics": {
+				ID:          "mechanics",
+				Title:       "Orbital Export",
+				NextStageID: "",
+				VisibleResources: []ResourceType{
+					ResourceStone,
+					ResourceIronOre,
+					ResourceCopperOre,
+					ResourceCoal,
+				},
+				KnownRecipes: nil,
+				PerkPowerThresholds: []float64{
+					180,
+					420,
+					780,
+				},
+				PerkPool: []string{
+					"sturdy-crank",
+					"heavy-crank",
+					"hot-furnace",
+					"blast-draft",
+					"high-pressure-boiler",
+					"coal-saver",
+				},
+				Goals: []ProgressGoal{
+					{
+						Kind:     GoalExportResource,
+						Label:    "export to orbit",
+						Resource: ResourceIronIngot,
+						Amount:   1,
 					},
 				},
 			},
@@ -351,21 +399,19 @@ func DefaultRecipeBook() *RecipeBook {
 				Title:   "Miner",
 				Kind:    RecipeDevice,
 				Device:  DeviceKindMiner,
-				StageID: "bootstrap",
+				StageID: "coal_power",
 				Pattern: []RecipeCell{
 					{X: 2, Y: 1, Part: DevicePartMotor},
 					{X: 1, Y: 2, Part: DevicePartFrame},
 					{X: 2, Y: 2, Part: DevicePartDrill},
 					{X: 3, Y: 2, Part: DevicePartFrame},
 					{X: 2, Y: 3, Part: DevicePartOutput},
-					{X: 2, Y: 4, Part: DevicePartHandCrank},
 				},
 				Ingredients: []RecipeIngredient{
 					{RecipeID: "frame", Amount: 2},
 					{RecipeID: "drill", Amount: 1},
 					{RecipeID: "motor", Amount: 1},
 					{RecipeID: "output", Amount: 1},
-					{RecipeID: "crank", Amount: 1},
 				},
 			},
 			"smelter": {

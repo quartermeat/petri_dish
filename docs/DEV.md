@@ -1,6 +1,6 @@
-# Hex Globe — Dev Guide
+# Helios — Dev Guide
 
-How to build, run, test, and ship Hex Globe from WSL. See `docs/DESIGN.md` for architecture.
+How to build, run, test, and ship Helios from WSL. See `docs/DESIGN.md` for architecture.
 
 ## Prereqs
 
@@ -12,7 +12,7 @@ How to build, run, test, and ship Hex Globe from WSL. See `docs/DESIGN.md` for a
 | Java | 17 (compileOptions). Activated via `rewindecho_activate_java_toolchain`. |
 | `adb` | Windows-side `adb.exe` reached from WSL; resolver in `lib_local_dev.sh` picks it up. |
 
-> **Cross-project dependency:** Hex Globe currently leans on scripts and a vendored Ebiten fork inside the `rewind` project. If you move or delete `/home/jerem/work/rewind/CODEX_rewind`, the Android build and the desktop Ebiten linking both break. See *Decoupling* below.
+> **Cross-project dependency:** Helios currently leans on scripts and a vendored Ebiten fork inside the `rewind` project. If you move or delete `/home/jerem/work/rewind/CODEX_rewind`, the Android build and the desktop Ebiten linking both break. See *Decoupling* below.
 
 ## Desktop
 
@@ -54,7 +54,7 @@ go test ./core/ -run TestNewGlobeProducesHexSphereTopology -v
 
 This calls, in order:
 1. `scripts/build_apk_wsl.sh` — binds the Go mobile package into an AAR and runs `gradlew assembleDebug`.
-2. `scripts/install_apk_windows_from_wsl.sh` — installs via `adb`, force-stops any previous instance, launches the activity, and tails `logcat` for ~6 s filtered by `HexGlobe|AndroidRuntime|Go|ebiten|FATAL|panic`.
+2. `scripts/install_apk_windows_from_wsl.sh` — installs via `adb`, force-stops any previous instance, launches the activity, and tails `logcat` for ~6 s filtered by `Helios|AndroidRuntime|Go|ebiten|FATAL|panic`.
 
 Logs are written to `logs/build_install_<timestamp>.txt`.
 
@@ -67,7 +67,7 @@ Logs are written to `logs/build_install_<timestamp>.txt`.
 
 What this does:
 - Builds `ebitenmobile` from the local Ebiten fork (output: `.tools/ebitenmobile`).
-- Runs `ebitenmobile bind -target android -javapkg com.hexglobe -o android/app/libs/HexGlobe.aar ./mobile`.
+- Runs `ebitenmobile bind -target android -javapkg com.hexglobe -o android/app/libs/Helios.aar ./mobile`.
 - Runs `gradlew assembleDebug --no-daemon` against `android/`.
 
 ### Just install an already-built APK
@@ -78,7 +78,7 @@ What this does:
 #   APK_PATH          default android/app/build/outputs/apk/debug/app-debug.apk
 #   ANDROID_SERIAL    target a specific device when multiple are attached
 #   SHOW_LOGS_SECS    seconds of logcat to collect after launch (default 6)
-#   LOG_FILTER_REGEX  grep filter for logcat (default includes HexGlobe|ebiten|FATAL)
+#   LOG_FILTER_REGEX  grep filter for logcat (default includes Helios|ebiten|FATAL)
 ```
 
 ### Android app facts
@@ -97,7 +97,7 @@ hex_globe/
 ├── hexglobe/  Ebiten game loop, rendering, input
 ├── mobile/    gomobile entry (calls hexglobe.NewGame via ebiten/v2/mobile)
 ├── main.go    desktop entry (build tag !android)
-├── android/   Gradle wrapper app; consumes HexGlobe.aar
+├── android/   Gradle wrapper app; consumes Helios.aar
 └── scripts/   build/install helpers
 ```
 
@@ -133,7 +133,7 @@ The `!android` build tag on `main.go` keeps the desktop entry point out of the m
 
 ## Decoupling from `rewind`
 
-The shared `lib_local_dev.sh`, vendored Ebiten, and shared Go/Java/Android toolchain activation are pragmatic but brittle. When Hex Globe grows past prototype, the clean-up worth doing:
+The shared `lib_local_dev.sh`, vendored Ebiten, and shared Go/Java/Android toolchain activation are pragmatic but brittle. When Helios grows past prototype, the clean-up worth doing:
 
 - Vendor Ebiten into `third_party/ebiten` under this project (or drop the `replace` once upstream releases include the features this fork relies on).
 - Copy the minimum needed helpers out of `lib_local_dev.sh` into `scripts/lib_local_dev.sh` here.

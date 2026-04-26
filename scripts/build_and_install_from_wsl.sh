@@ -14,7 +14,7 @@ LOG_FILE="${LOG_FILE:-${LOG_DIR}/build_install_$(date +%Y%m%d_%H%M%S).txt}"
 
 exec > >(tee "${LOG_FILE}") 2>&1
 echo "Logging to ${LOG_FILE}"
-echo "Building, installing, and launching Hex Globe..."
+echo "Building, installing, and launching Helios..."
 
 /bin/bash "${ROOT_DIR}/scripts/build_apk_wsl.sh"
 APK_PATH="${APK_PATH}" /bin/bash "${ROOT_DIR}/scripts/install_apk_windows_from_wsl.sh" "${PACKAGE_NAME}" "${LAUNCH_ACTIVITY}"

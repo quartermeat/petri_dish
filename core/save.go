@@ -37,6 +37,7 @@ type SaveData struct {
 	ActivePerks       []string             `json:"activePerks,omitempty"`
 	StagePowerSpent   map[string]float64   `json:"stagePowerSpent,omitempty"`
 	PerksAwarded      map[string]int       `json:"perksAwarded,omitempty"`
+	CreaturesEnabled  bool                 `json:"creaturesEnabled,omitempty"`
 	Tactical          []SavedTacticalEntry `json:"tactical"`
 }
 

@@ -173,10 +173,15 @@ func (g *Game) applyPerk(def core.PerkDef) {
 		case core.PerkResourceGift:
 			amount := int(def.Magnitude)
 			if amount > 0 && def.Resource != core.ResourceNone {
-				if g.inventory == nil {
-					g.inventory = map[core.ResourceType]int{}
+				inventory := g.inventory
+				if !g.gateExportUnlocked() {
+					inventory = g.buildResourceInventory()
 				}
-				g.inventory[def.Resource] += amount
+				if inventory == nil {
+					inventory = map[core.ResourceType]int{}
+					g.inventory = inventory
+				}
+				inventory[def.Resource] += amount
 				if g.minedTotals == nil {
 					g.minedTotals = map[core.ResourceType]int{}
 				}

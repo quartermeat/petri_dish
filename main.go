@@ -13,7 +13,9 @@ import (
 )
 
 // Version is overridden at build time via:
-//   -ldflags "-X main.Version=$(git describe --always --dirty)"
+//
+//	-ldflags "-X main.Version=$(git describe --always --dirty)"
+//
 // An empty Version means saves are always treated as version-mismatched —
 // useful as a default so unsigned builds don't load across unknown binaries.
 var Version = ""
@@ -37,7 +39,7 @@ func main() {
 	}
 
 	ebiten.SetWindowSize(game.ScreenWidth()*2, game.ScreenHeight()*2)
-	ebiten.SetWindowTitle("Hex Globe")
+	ebiten.SetWindowTitle("Helios")
 	ebiten.SetTPS(ebiten.SyncWithFPS)
 
 	if err := ebiten.RunGame(game); err != nil {
@@ -47,7 +49,7 @@ func main() {
 
 func desktopSaveDir() string {
 	if dir, err := os.UserConfigDir(); err == nil && dir != "" {
-		return filepath.Join(dir, "HexGlobe")
+		return filepath.Join(dir, "Helios")
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		return filepath.Join(home, ".hex_globe")

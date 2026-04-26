@@ -1,4 +1,4 @@
-# Hex Globe
+# Helios
 
 Isolated Ebiten prototype workspace for an Android-first rotating hex-cell globe.
 

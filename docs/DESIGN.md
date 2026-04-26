@@ -1,4 +1,4 @@
-# Hex Globe — Design
+# Helios — Design
 
 What the code currently does and how it's put together. No forward-looking opinions — those live in the conversation, not here.
 
@@ -125,4 +125,4 @@ func init() { mobile.SetGame(hexglobe.NewGame()) }
 func Dummy() {} // gomobile requires ≥1 exported symbol
 ```
 
-`ebitenmobile bind -target android -javapkg com.hexglobe -o android/app/libs/HexGlobe.aar ./mobile` produces a `com.hexglobe.mobile` Java package containing `EbitenView` and `Mobile`. `MainActivity` inflates `EbitenView` from XML, calls `Seq.setContext(applicationContext)` and `Mobile.dummy()` during `onCreate`, and proxies lifecycle into `suspendGame` / `resumeGame`.
+`ebitenmobile bind -target android -javapkg com.hexglobe -o android/app/libs/Helios.aar ./mobile` produces a `com.hexglobe.mobile` Java package containing `EbitenView` and `Mobile`. `MainActivity` inflates `EbitenView` from XML, calls `Seq.setContext(applicationContext)` and `Mobile.dummy()` during `onCreate`, and proxies lifecycle into `suspendGame` / `resumeGame`.

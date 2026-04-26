@@ -83,9 +83,11 @@ type DeviceLayout struct {
 	Width           int
 	Height          int
 	Parts           []DevicePart
+	Devices         []DeviceKind `json:"devices,omitempty"`
 	Kind            DeviceKind
 	SpecialStarter  bool
 	ConfigInput     ResourceType         `json:"configInput,omitempty"`
+	DeployTimer     float64              `json:"deployTimer,omitempty"`
 	RefundResources map[ResourceType]int `json:"refundResources,omitempty"`
 	RefundParts     map[DevicePart]int   `json:"refundParts,omitempty"`
 }
@@ -130,6 +132,7 @@ type TacticalMicroCell struct {
 type TacticalEntity struct {
 	ID          int
 	MicroCellID int
+	TileID      int
 	Fill        color.RGBA
 	StepTicks   int
 }
@@ -140,6 +143,7 @@ type TacticalMap struct {
 	Tiles         []TacticalTile
 	MicroCells    []TacticalMicroCell
 	Entities      []TacticalEntity
+	Supply        map[ResourceType]int
 	microIndex    map[[2]int]int
 	tileIndex     map[[2]int]int
 	microOccupied map[int]int
@@ -150,6 +154,7 @@ func NewTacticalMap(cell *Cell, radius int) *TacticalMap {
 	tmap := &TacticalMap{
 		CellID:        cell.ID,
 		Radius:        radius,
+		Supply:        map[ResourceType]int{},
 		microIndex:    map[[2]int]int{},
 		tileIndex:     map[[2]int]int{},
 		microOccupied: map[int]int{},
@@ -218,11 +223,33 @@ func (d *DeviceLayout) PartAt(x, y int) DevicePart {
 	return d.Parts[y*d.Width+x]
 }
 
+func (d *DeviceLayout) DeviceAt(x, y int) DeviceKind {
+	if x < 0 || y < 0 || x >= d.Width || y >= d.Height || len(d.Devices) != d.Width*d.Height {
+		return DeviceKindNone
+	}
+	return d.Devices[y*d.Width+x]
+}
+
 func (d *DeviceLayout) SetPart(x, y int, part DevicePart) {
 	if x < 0 || y < 0 || x >= d.Width || y >= d.Height {
 		return
 	}
 	d.Parts[y*d.Width+x] = part
+	if len(d.Devices) == d.Width*d.Height {
+		d.Devices[y*d.Width+x] = DeviceKindNone
+	}
+	d.Kind = DeviceKindNone
+}
+
+func (d *DeviceLayout) SetDevice(x, y int, kind DeviceKind) {
+	if x < 0 || y < 0 || x >= d.Width || y >= d.Height {
+		return
+	}
+	if len(d.Devices) != d.Width*d.Height {
+		d.Devices = make([]DeviceKind, d.Width*d.Height)
+	}
+	d.Devices[y*d.Width+x] = kind
+	d.Parts[y*d.Width+x] = DevicePartEmpty
 	d.Kind = DeviceKindNone
 }
 
@@ -255,8 +282,7 @@ func (d *DeviceLayout) FindBlueprint() DeviceKind {
 				d.PartAt(x, y-1) == DevicePartMotor &&
 				d.PartAt(x-1, y) == DevicePartFrame &&
 				d.PartAt(x+1, y) == DevicePartFrame &&
-				d.PartAt(x, y+1) == DevicePartOutput &&
-				d.PartAt(x, y+2) == DevicePartHandCrank {
+				d.PartAt(x, y+1) == DevicePartOutput {
 				return DeviceKindMiner
 			}
 		}
@@ -266,28 +292,49 @@ func (d *DeviceLayout) FindBlueprint() DeviceKind {
 
 func (m *TacticalMap) Update() {
 	m.tick++
+	entityOccupied := m.entityTileOccupancy()
 	for i := range m.Entities {
 		entity := &m.Entities[i]
 		if entity.StepTicks <= 0 || m.tick%entity.StepTicks != 0 {
 			continue
 		}
-		current := m.MicroCells[entity.MicroCellID]
+		if entity.TileID < 0 || entity.TileID >= len(m.Tiles) {
+			continue
+		}
+		current := m.Tiles[entity.TileID]
 		dirOffset := deterministicIndex(m.CellID+m.tick, entity.ID, len(tacticalDirections))
 		for step := 0; step < len(tacticalDirections); step++ {
 			dir := tacticalDirections[(dirOffset+step)%len(tacticalDirections)]
-			nextID, ok := m.microIndex[[2]int{current.Q + dir[0], current.R + dir[1]}]
+			nextID, ok := m.tileIndex[[2]int{current.Q + dir[0], current.R + dir[1]}]
 			if !ok {
 				continue
 			}
-			if _, occupied := m.microOccupied[nextID]; occupied {
+			if _, occupied := entityOccupied[nextID]; occupied {
 				continue
 			}
-			delete(m.microOccupied, entity.MicroCellID)
-			entity.MicroCellID = nextID
-			m.microOccupied[nextID] = entity.ID
+			next := &m.Tiles[nextID]
+			if next.Device != nil && next.Device.Kind != DeviceKindNone {
+				continue
+			}
+			delete(entityOccupied, entity.TileID)
+			entity.TileID = nextID
+			entity.MicroCellID = -1
+			entityOccupied[nextID] = entity.ID
 			break
 		}
 	}
+}
+
+func (m *TacticalMap) entityTileOccupancy() map[int]int {
+	occupied := make(map[int]int, len(m.Entities))
+	for i := range m.Entities {
+		entity := &m.Entities[i]
+		if entity.TileID < 0 || entity.TileID >= len(m.Tiles) {
+			continue
+		}
+		occupied[entity.TileID] = entity.ID
+	}
+	return occupied
 }
 
 // ProductionMods carries per-tick gameplay multipliers (perks, etc.) and an
@@ -347,6 +394,11 @@ func (m *ProductionMods) decayMul() float64 {
 }
 
 func (m *TacticalMap) Produce(dt float64, inventory map[ResourceType]int, minedTotals map[ResourceType]int, mods *ProductionMods) {
+	if m.Supply == nil {
+		m.Supply = map[ResourceType]int{}
+	}
+	hasGate := m.HasDevice(DeviceKindGate)
+	m.importGateInputs(inventory)
 	outMul := mods.outputMul()
 	costMul := mods.powerCostMul()
 	smelterOutMul := mods.smelterOutputMul()
@@ -360,16 +412,63 @@ func (m *TacticalMap) Produce(dt float64, inventory map[ResourceType]int, minedT
 		}
 		switch tile.Device.Kind {
 		case DeviceKindMiner:
-			m.produceMiner(tile, dt, inventory, minedTotals, outMul, costMul, decayMul, mods)
+			m.produceMiner(tile, dt, m.Supply, hasGate, minedTotals, outMul, costMul, decayMul, mods)
 		case DeviceKindSmelter:
-			m.produceSmelter(tile, dt, inventory, minedTotals, smelterOutMul, smelterCostMul, decayMul, mods)
+			m.produceSmelter(tile, dt, m.Supply, minedTotals, smelterOutMul, smelterCostMul, decayMul, mods)
 		case DeviceKindGenerator:
-			m.produceGenerator(tile, dt, inventory, minedTotals, generatorPowerMul, decayMul, mods)
+			m.produceGenerator(tile, dt, m.Supply, minedTotals, generatorPowerMul, decayMul, mods)
 		}
 	}
 }
 
-func (m *TacticalMap) produceMiner(tile *TacticalTile, dt float64, inventory map[ResourceType]int, minedTotals map[ResourceType]int, outMul, costMul, decayMul float64, mods *ProductionMods) {
+func (m *TacticalMap) importGateInputs(global map[ResourceType]int) {
+	if global == nil {
+		return
+	}
+	needed := map[ResourceType]int{}
+	for i := range m.Tiles {
+		tile := &m.Tiles[i]
+		if tile.Device == nil || tile.Device.Kind != DeviceKindGate {
+			continue
+		}
+		for _, neighbor := range m.adjacentDeviceTiles(tile) {
+			if neighbor.Device == nil {
+				continue
+			}
+			switch neighbor.Device.Kind {
+			case DeviceKindSmelter:
+				if _, ok := SmelterOutputForInput(neighbor.Device.ConfigInput); ok {
+					needed[neighbor.Device.ConfigInput] = 12
+					needed[ResourceCoal] = 12
+				}
+			case DeviceKindGenerator:
+				needed[ResourceCoal] = 12
+			}
+		}
+	}
+	for resource, target := range needed {
+		if resource == ResourceNone || target <= 0 {
+			continue
+		}
+		missing := target - m.Supply[resource]
+		if missing <= 0 {
+			continue
+		}
+		if missing > global[resource] {
+			missing = global[resource]
+		}
+		if missing <= 0 {
+			continue
+		}
+		global[resource] -= missing
+		m.Supply[resource] += missing
+	}
+}
+
+func (m *TacticalMap) produceMiner(tile *TacticalTile, dt float64, localSupply map[ResourceType]int, hasGate bool, minedTotals map[ResourceType]int, outMul, costMul, decayMul float64, mods *ProductionMods) {
+	if !hasGate {
+		return
+	}
 	if tile.Resource == ResourceNone || tile.ResourceRemaining <= 0 {
 		return
 	}
@@ -395,7 +494,9 @@ func (m *TacticalMap) produceMiner(tile *TacticalTile, dt float64, inventory map
 	tile.ResourceCarry += produced
 	whole := int(tile.ResourceCarry)
 	if whole > 0 {
-		inventory[tile.Resource] += whole
+		if localSupply != nil {
+			localSupply[tile.Resource] += whole
+		}
 		if minedTotals != nil {
 			minedTotals[tile.Resource] += whole
 		}
@@ -406,6 +507,9 @@ func (m *TacticalMap) produceMiner(tile *TacticalTile, dt float64, inventory map
 func (m *TacticalMap) produceSmelter(tile *TacticalTile, dt float64, inventory map[ResourceType]int, minedTotals map[ResourceType]int, outMul, costMul, decayMul float64, mods *ProductionMods) {
 	if !m.HasAdjacentDevice(tile, DeviceKindGate) {
 		tile.PowerBuffer = math.Max(0, tile.PowerBuffer-dt*0.04*decayMul)
+		return
+	}
+	if inventory == nil {
 		return
 	}
 	input := tile.Device.ConfigInput
@@ -518,6 +622,59 @@ func (m *TacticalMap) HasAdjacentDevice(tile *TacticalTile, kind DeviceKind) boo
 	return false
 }
 
+func (m *TacticalMap) HasDevice(kind DeviceKind) bool {
+	if m == nil || kind == DeviceKindNone {
+		return false
+	}
+	for i := range m.Tiles {
+		tile := &m.Tiles[i]
+		if tile.Device != nil && tile.Device.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *TacticalMap) TilePath(startID, endID int) []int {
+	if m == nil || startID < 0 || endID < 0 || startID >= len(m.Tiles) || endID >= len(m.Tiles) {
+		return nil
+	}
+	if startID == endID {
+		return []int{startID}
+	}
+	prev := make([]int, len(m.Tiles))
+	for i := range prev {
+		prev[i] = -1
+	}
+	queue := []int{startID}
+	prev[startID] = startID
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		tile := &m.Tiles[current]
+		for _, dir := range tacticalDirections {
+			next, ok := m.tileIndex[[2]int{tile.Q + dir[0], tile.R + dir[1]}]
+			if !ok || next < 0 || next >= len(m.Tiles) || prev[next] != -1 {
+				continue
+			}
+			nextTile := &m.Tiles[next]
+			if next != endID && nextTile.Device != nil && nextTile.Device.Kind != DeviceKindNone {
+				continue
+			}
+			prev[next] = current
+			if next == endID {
+				path := []int{endID}
+				for path[0] != startID {
+					path = append([]int{prev[path[0]]}, path...)
+				}
+				return path
+			}
+			queue = append(queue, next)
+		}
+	}
+	return nil
+}
+
 func (m *TacticalMap) adjacentDeviceTiles(tile *TacticalTile) []*TacticalTile {
 	if m == nil || tile == nil {
 		return nil
@@ -566,6 +723,9 @@ func (m *TacticalMap) ensureResourcePresence(resource ResourceType, score func(T
 // from the exported fields. Call this after JSON unmarshaling — those
 // indices have lowercase fields and don't survive serialization.
 func (m *TacticalMap) Rehydrate() {
+	if m.Supply == nil {
+		m.Supply = map[ResourceType]int{}
+	}
 	m.tileIndex = make(map[[2]int]int, len(m.Tiles))
 	for _, tile := range m.Tiles {
 		m.tileIndex[[2]int{tile.Q, tile.R}] = tile.ID
@@ -575,7 +735,12 @@ func (m *TacticalMap) Rehydrate() {
 		m.microIndex[[2]int{micro.Q, micro.R}] = micro.ID
 	}
 	m.microOccupied = make(map[int]int, len(m.Entities))
-	for _, entity := range m.Entities {
+	for i := range m.Entities {
+		entity := &m.Entities[i]
+		if entity.MicroCellID >= 0 && entity.MicroCellID < len(m.MicroCells) {
+			entity.TileID = m.MicroCells[entity.MicroCellID].ParentTileID
+			entity.MicroCellID = -1
+		}
 		if entity.MicroCellID >= 0 {
 			m.microOccupied[entity.MicroCellID] = entity.ID
 		}
@@ -617,21 +782,27 @@ func (m *TacticalMap) spawnEntities(cell *Cell) {
 		count = 4
 	}
 	m.Entities = make([]TacticalEntity, 0, count)
-	for i := 0; i < count && len(m.MicroCells) > 0; i++ {
-		idx := deterministicIndex(cell.ID, i, len(m.MicroCells))
-		for tries := 0; tries < len(m.MicroCells); tries++ {
-			microID := m.MicroCells[(idx+tries)%len(m.MicroCells)].ID
-			if _, occupied := m.microOccupied[microID]; occupied {
+	occupied := map[int]int{}
+	for i := 0; i < count && len(m.Tiles) > 0; i++ {
+		idx := deterministicIndex(cell.ID, i, len(m.Tiles))
+		for tries := 0; tries < len(m.Tiles); tries++ {
+			tileID := m.Tiles[(idx+tries)%len(m.Tiles)].ID
+			if _, used := occupied[tileID]; used {
+				continue
+			}
+			tile := &m.Tiles[tileID]
+			if tile.Device != nil && tile.Device.Kind != DeviceKindNone {
 				continue
 			}
 			entityID := len(m.Entities)
 			m.Entities = append(m.Entities, TacticalEntity{
 				ID:          entityID,
-				MicroCellID: microID,
+				MicroCellID: -1,
+				TileID:      tileID,
 				Fill:        tacticalEntityColor(cell, i),
 				StepTicks:   12 + deterministicIndex(cell.ID+17, i+3, 36),
 			})
-			m.microOccupied[microID] = entityID
+			occupied[tileID] = entityID
 			break
 		}
 	}
