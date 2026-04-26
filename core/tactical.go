@@ -80,12 +80,14 @@ type DeviceDef struct {
 }
 
 type DeviceLayout struct {
-	Width          int
-	Height         int
-	Parts          []DevicePart
-	Kind           DeviceKind
-	SpecialStarter bool
-	ConfigInput    ResourceType `json:"configInput,omitempty"`
+	Width           int
+	Height          int
+	Parts           []DevicePart
+	Kind            DeviceKind
+	SpecialStarter  bool
+	ConfigInput     ResourceType         `json:"configInput,omitempty"`
+	RefundResources map[ResourceType]int `json:"refundResources,omitempty"`
+	RefundParts     map[DevicePart]int   `json:"refundParts,omitempty"`
 }
 
 type DeviceKind int
@@ -95,6 +97,7 @@ const (
 	DeviceKindMiner
 	DeviceKindSmelter
 	DeviceKindGate
+	DeviceKindGenerator
 )
 
 type TacticalTile struct {
@@ -228,6 +231,15 @@ func (d *DeviceLayout) IsMiner() bool {
 }
 
 func (d *DeviceLayout) FindBlueprint() DeviceKind {
+	for y := 1; y < d.Height-1; y++ {
+		for x := 0; x < d.Width; x++ {
+			if d.PartAt(x, y) == DevicePartMotor &&
+				d.PartAt(x, y-1) == DevicePartHandCrank &&
+				d.PartAt(x, y+1) == DevicePartOutput {
+				return DeviceKindGenerator
+			}
+		}
+	}
 	for y := 0; y < d.Height-2; y++ {
 		for x := 0; x < d.Width; x++ {
 			if d.PartAt(x, y) == DevicePartMotor &&
@@ -283,12 +295,13 @@ func (m *TacticalMap) Update() {
 // consumed AND resulted in actual production. Zero or unset multipliers
 // default to 1.0; pass a populated struct to perturb mining behaviour.
 type ProductionMods struct {
-	OutputMul        float64  // miner output rate multiplier (default 1.0)
-	PowerCostMul     float64  // miner per-tick power cost multiplier (default 1.0)
-	SmelterOutputMul float64  // smelter output rate multiplier (default 1.0)
-	SmelterPowerMul  float64  // smelter per-tick power cost multiplier (default 1.0)
-	DecayMul         float64  // power-buffer decay multiplier (default 1.0)
-	ProductivePower  *float64 // optional accumulator: productive power spent this tick
+	OutputMul         float64  // miner output rate multiplier (default 1.0)
+	PowerCostMul      float64  // miner per-tick power cost multiplier (default 1.0)
+	SmelterOutputMul  float64  // smelter output rate multiplier (default 1.0)
+	SmelterPowerMul   float64  // smelter per-tick power cost multiplier (default 1.0)
+	GeneratorPowerMul float64  // generator power output multiplier (default 1.0)
+	DecayMul          float64  // power-buffer decay multiplier (default 1.0)
+	ProductivePower   *float64 // optional accumulator: productive power spent this tick
 }
 
 func (m *ProductionMods) outputMul() float64 {
@@ -319,6 +332,13 @@ func (m *ProductionMods) smelterPowerMul() float64 {
 	return m.SmelterPowerMul
 }
 
+func (m *ProductionMods) generatorPowerMul() float64 {
+	if m == nil || m.GeneratorPowerMul == 0 {
+		return 1
+	}
+	return m.GeneratorPowerMul
+}
+
 func (m *ProductionMods) decayMul() float64 {
 	if m == nil || m.DecayMul == 0 {
 		return 1
@@ -331,6 +351,7 @@ func (m *TacticalMap) Produce(dt float64, inventory map[ResourceType]int, minedT
 	costMul := mods.powerCostMul()
 	smelterOutMul := mods.smelterOutputMul()
 	smelterCostMul := mods.smelterPowerMul()
+	generatorPowerMul := mods.generatorPowerMul()
 	decayMul := mods.decayMul()
 	for i := range m.Tiles {
 		tile := &m.Tiles[i]
@@ -342,6 +363,8 @@ func (m *TacticalMap) Produce(dt float64, inventory map[ResourceType]int, minedT
 			m.produceMiner(tile, dt, inventory, minedTotals, outMul, costMul, decayMul, mods)
 		case DeviceKindSmelter:
 			m.produceSmelter(tile, dt, inventory, minedTotals, smelterOutMul, smelterCostMul, decayMul, mods)
+		case DeviceKindGenerator:
+			m.produceGenerator(tile, dt, inventory, minedTotals, generatorPowerMul, decayMul, mods)
 		}
 	}
 }
@@ -355,13 +378,13 @@ func (m *TacticalMap) produceMiner(tile *TacticalTile, dt float64, inventory map
 		return
 	}
 	tile.PowerBuffer = math.Max(0, tile.PowerBuffer-dt*0.04*decayMul)
-	runCost := def.RunPowerCost * costMul
-	if tile.PowerBuffer < runCost || !def.RequiresPoolRoute {
-		return
-	}
 	rate := (def.OutputPerSecond + tile.ResourceRichness*0.42) * outMul
 	produced := math.Min(tile.ResourceRemaining, rate*dt)
 	if produced <= 0 {
+		return
+	}
+	runCost := def.RunPowerCost * costMul * produced
+	if tile.PowerBuffer < runCost {
 		return
 	}
 	tile.PowerBuffer -= runCost
@@ -427,6 +450,47 @@ func (m *TacticalMap) produceSmelter(tile *TacticalTile, dt float64, inventory m
 	tile.ResourceCarry -= float64(batches)
 }
 
+func (m *TacticalMap) produceGenerator(tile *TacticalTile, dt float64, inventory map[ResourceType]int, minedTotals map[ResourceType]int, powerMul, decayMul float64, mods *ProductionMods) {
+	if !m.HasAdjacentDevice(tile, DeviceKindGate) {
+		tile.PowerBuffer = math.Max(0, tile.PowerBuffer-dt*0.04*decayMul)
+		return
+	}
+	def := DeviceDefinition(tile.Device.Kind)
+	if def.Kind == DeviceKindNone {
+		return
+	}
+	tile.PowerBuffer = math.Max(0, tile.PowerBuffer-dt*0.04*decayMul)
+	if inventory == nil || inventory[ResourceCoal] <= 0 {
+		return
+	}
+	tile.ResourceCarry += def.OutputPerSecond * dt
+	whole := int(tile.ResourceCarry)
+	if whole <= 0 {
+		return
+	}
+	if whole > inventory[ResourceCoal] {
+		whole = inventory[ResourceCoal]
+	}
+	if whole <= 0 {
+		return
+	}
+	inventory[ResourceCoal] -= whole
+	tile.ResourceCarry -= float64(whole)
+	generated := def.RunPowerCost * powerMul * float64(whole)
+	if mods != nil && mods.ProductivePower != nil {
+		*mods.ProductivePower += generated
+	}
+	for _, neighbor := range m.adjacentDeviceTiles(tile) {
+		if neighbor.Device == nil || neighbor.Device.Kind == DeviceKindNone {
+			continue
+		}
+		if DeviceDefinition(neighbor.Device.Kind).RunPowerCost <= 0 {
+			continue
+		}
+		neighbor.PowerBuffer = math.Min(1, neighbor.PowerBuffer+generated)
+	}
+}
+
 func SmelterOutputForInput(input ResourceType) (ResourceType, bool) {
 	switch input {
 	case ResourceIronOre:
@@ -452,6 +516,21 @@ func (m *TacticalMap) HasAdjacentDevice(tile *TacticalTile, kind DeviceKind) boo
 		}
 	}
 	return false
+}
+
+func (m *TacticalMap) adjacentDeviceTiles(tile *TacticalTile) []*TacticalTile {
+	if m == nil || tile == nil {
+		return nil
+	}
+	tiles := make([]*TacticalTile, 0, len(tacticalDirections))
+	for _, dir := range tacticalDirections {
+		index, ok := m.tileIndex[[2]int{tile.Q + dir[0], tile.R + dir[1]}]
+		if !ok || index < 0 || index >= len(m.Tiles) {
+			continue
+		}
+		tiles = append(tiles, &m.Tiles[index])
+	}
+	return tiles
 }
 
 func (m *TacticalMap) ensureResourcePresence(resource ResourceType, score func(TacticalTile) float64, minRichness float64) {
@@ -695,6 +774,8 @@ func DeviceKindLabel(kind DeviceKind) string {
 		return "smelter"
 	case DeviceKindGate:
 		return "gate"
+	case DeviceKindGenerator:
+		return "generator"
 	default:
 		return "idle"
 	}
@@ -771,6 +852,17 @@ func DeviceDefinition(kind DeviceKind) DeviceDef {
 			Kind:  kind,
 			Label: "gate",
 			Ports: []PortDef{{Kind: PortOutput, Channel: ChannelItem, Side: 3}},
+		}
+	case DeviceKindGenerator:
+		return DeviceDef{
+			Kind:  kind,
+			Label: "generator",
+			Ports: []PortDef{
+				{Kind: PortInput, Channel: ChannelItem, Resource: ResourceCoal, Side: 0},
+				{Kind: PortOutput, Channel: ChannelPower, Side: 3},
+			},
+			RunPowerCost:    0.9,
+			OutputPerSecond: 0.25,
 		}
 	default:
 		return DeviceDef{}

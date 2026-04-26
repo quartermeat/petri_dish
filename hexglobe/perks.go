@@ -28,11 +28,12 @@ type perkChoiceState struct {
 // accumulator from the player's currently-active perks.
 func (g *Game) productionMods() *core.ProductionMods {
 	mods := &core.ProductionMods{
-		OutputMul:        1,
-		PowerCostMul:     1,
-		SmelterOutputMul: 1,
-		SmelterPowerMul:  1,
-		DecayMul:         1,
+		OutputMul:         1,
+		PowerCostMul:      1,
+		SmelterOutputMul:  1,
+		SmelterPowerMul:   1,
+		GeneratorPowerMul: 1,
+		DecayMul:          1,
 	}
 	for _, perkID := range g.activePerks {
 		def, ok := g.perks.Perk(perkID)
@@ -48,6 +49,8 @@ func (g *Game) productionMods() *core.ProductionMods {
 			mods.SmelterOutputMul *= 1 + def.Magnitude
 		case core.PerkSmelterPower:
 			mods.SmelterPowerMul *= 1 - def.Magnitude
+		case core.PerkGeneratorOutput:
+			mods.GeneratorPowerMul *= 1 + def.Magnitude
 		case core.PerkBufferDecay:
 			mods.DecayMul *= 1 - def.Magnitude
 		}
@@ -80,6 +83,16 @@ func (g *Game) crankPowerBoost() float64 {
 		}
 	}
 	return mul
+}
+
+func (g *Game) hasActivePerkKind(kind core.PerkKind) bool {
+	for _, perkID := range g.activePerks {
+		def, ok := g.perks.Perk(perkID)
+		if ok && !def.OneShot && def.Kind == kind {
+			return true
+		}
+	}
+	return false
 }
 
 // recordProductivePower adds to the current stage's power-spent meter and
@@ -180,7 +193,7 @@ func (g *Game) applyPerk(def core.PerkDef) {
 		g.perksAwarded[g.perkChoice.stageID]++
 	}
 	g.perkChoice = nil
-	g.saveNow()
+	g.saveSoon()
 	// Another threshold may already be crossed if power flew past two in
 	// the same frame — re-check.
 	g.maybeTriggerPerkChoice()

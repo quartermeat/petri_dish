@@ -79,7 +79,9 @@ const (
 	PerkPowerEfficiency PerkKind = "power_efficiency" // -Magnitude (fraction) of miner power consumption
 	PerkSmelterOutput   PerkKind = "smelter_output"   // +Magnitude (fraction) added to smelter output rate
 	PerkSmelterPower    PerkKind = "smelter_power"    // -Magnitude (fraction) of smelter power consumption
+	PerkGeneratorOutput PerkKind = "generator_output" // +Magnitude (fraction) added to generator output
 	PerkBufferDecay     PerkKind = "buffer_decay"     // -Magnitude (fraction) of buffer decay rate
+	PerkHoldPower       PerkKind = "hold_power"       // hold on starter miner to transfer power continuously
 	PerkResourceGift    PerkKind = "resource_gift"    // one-shot: add Magnitude units of Resource
 )
 
@@ -122,6 +124,7 @@ func DefaultProgressionBook() *ProgressionBook {
 					"heavy-crank",
 					"patient-drill",
 					"eager-drill",
+					"youve-got-the-power",
 					"steady-buffer",
 					"stone-cache",
 					"iron-cache",
@@ -129,13 +132,13 @@ func DefaultProgressionBook() *ProgressionBook {
 				Goals: []ProgressGoal{
 					{
 						Kind:   GoalPlaceStarterUnit,
-						Label:  "place starter miner",
+						Label:  "place MUG",
 						Device: DeviceKindMiner,
 						Amount: 1,
 					},
 					{
 						Kind:   GoalRecoverStarterUnit,
-						Label:  "pick up starter miner",
+						Label:  "pick up MUG",
 						Device: DeviceKindMiner,
 						Amount: 1,
 					},
@@ -156,7 +159,7 @@ func DefaultProgressionBook() *ProgressionBook {
 			"smelting": {
 				ID:          "smelting",
 				Title:       "Smelting Basics",
-				NextStageID: "mechanics",
+				NextStageID: "coal_power",
 				VisibleResources: []ResourceType{
 					ResourceStone,
 					ResourceIronOre,
@@ -216,6 +219,59 @@ func DefaultProgressionBook() *ProgressionBook {
 						Label:    "make iron plate",
 						Resource: ResourceIronIngot,
 						Amount:   1,
+					},
+				},
+			},
+			"coal_power": {
+				ID:          "coal_power",
+				Title:       "Coal Power",
+				NextStageID: "mechanics",
+				VisibleResources: []ResourceType{
+					ResourceStone,
+					ResourceIronOre,
+					ResourceCopperOre,
+					ResourceCoal,
+				},
+				KnownRecipes: []string{
+					"generator",
+				},
+				PerkPowerThresholds: []float64{
+					120,
+					320,
+					620,
+				},
+				PerkPool: []string{
+					"high-pressure-boiler",
+					"coal-saver",
+					"clean-burn",
+					"insulated-bricks",
+					"coal-cache",
+					"iron-plate-cache",
+				},
+				Goals: []ProgressGoal{
+					{
+						Kind:     GoalDiscoverRecipe,
+						Label:    "discover generator",
+						RecipeID: "generator",
+						Amount:   1,
+					},
+					{
+						Kind:   GoalBuildDevice,
+						Label:  "build generator",
+						Device: DeviceKindGenerator,
+						Amount: 1,
+					},
+					{
+						Kind:     GoalMineResource,
+						Label:    "mine coal",
+						Resource: ResourceCoal,
+						Amount:   16,
+					},
+					{
+						Kind:     GoalProduceResource,
+						Label:    "make iron plates",
+						Resource: ResourceIronIngot,
+						Amount:   10,
 					},
 				},
 			},
@@ -329,6 +385,25 @@ func DefaultRecipeBook() *RecipeBook {
 					{RecipeID: "motor", Amount: 1},
 				},
 			},
+			"generator": {
+				ID:      "generator",
+				Title:   "Generator",
+				Kind:    RecipeDevice,
+				Device:  DeviceKindGenerator,
+				StageID: "coal_power",
+				Pattern: []RecipeCell{
+					{X: 2, Y: 1, Part: DevicePartHandCrank},
+					{X: 2, Y: 2, Part: DevicePartMotor},
+					{X: 2, Y: 3, Part: DevicePartOutput},
+				},
+				Ingredients: []RecipeIngredient{
+					{Resource: ResourceStone, Amount: 4},
+					{Resource: ResourceIronIngot, Amount: 2},
+					{RecipeID: "motor", Amount: 1},
+					{RecipeID: "output", Amount: 1},
+					{RecipeID: "crank", Amount: 1},
+				},
+			},
 			"iron-ingot": {
 				ID:      "iron-ingot",
 				Title:   "Iron Plate",
@@ -424,6 +499,14 @@ func DefaultPerkBook() *PerkBook {
 				StageID:     "bootstrap",
 				Magnitude:   0.50,
 			},
+			"youve-got-the-power": {
+				ID:          "youve-got-the-power",
+				Title:       "You've Got the Power",
+				Description: "Hold on the MUG to transfer power.",
+				Kind:        PerkHoldPower,
+				StageID:     "bootstrap",
+				Magnitude:   1,
+			},
 			"stone-cache": {
 				ID:          "stone-cache",
 				Title:       "Stone Cache",
@@ -505,6 +588,22 @@ func DefaultPerkBook() *PerkBook {
 				Resource:    ResourceCopperIngot,
 				Magnitude:   3,
 				OneShot:     true,
+			},
+			"high-pressure-boiler": {
+				ID:          "high-pressure-boiler",
+				Title:       "High Pressure",
+				Description: "Generators output 35% more power.",
+				Kind:        PerkGeneratorOutput,
+				StageID:     "coal_power",
+				Magnitude:   0.35,
+			},
+			"coal-saver": {
+				ID:          "coal-saver",
+				Title:       "Coal Saver",
+				Description: "Generators output 20% more power.",
+				Kind:        PerkGeneratorOutput,
+				StageID:     "coal_power",
+				Magnitude:   0.20,
 			},
 		},
 	}

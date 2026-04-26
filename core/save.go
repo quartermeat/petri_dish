@@ -70,7 +70,7 @@ func (s *SaveData) Save(dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	bytes, err := json.MarshalIndent(s, "", "  ")
+	bytes, err := json.Marshal(s)
 	if err != nil {
 		return err
 	}
