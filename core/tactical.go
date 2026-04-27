@@ -25,6 +25,7 @@ const (
 	ResourceCopperOre   ResourceType = "copper ore"
 	ResourceIronIngot   ResourceType = "iron ingot"
 	ResourceCopperIngot ResourceType = "copper ingot"
+	ResourceGear        ResourceType = "gear"
 	ResourceCoal        ResourceType = "coal"
 	ResourceCrystal     ResourceType = "crystal"
 )
@@ -100,6 +101,7 @@ const (
 	DeviceKindSmelter
 	DeviceKindGate
 	DeviceKindGenerator
+	DeviceKindAssembler
 )
 
 type TacticalTile struct {
@@ -129,25 +131,38 @@ type TacticalMicroCell struct {
 	Center       Vec3
 }
 
+type TacticalEntityKind string
+
+const (
+	TacticalEntityGreen  TacticalEntityKind = "green"
+	TacticalEntityRed    TacticalEntityKind = "red"
+	TacticalEntityPurple TacticalEntityKind = "purple"
+)
+
 type TacticalEntity struct {
-	ID          int
-	MicroCellID int
-	TileID      int
-	Fill        color.RGBA
-	StepTicks   int
+	ID             int
+	Kind           TacticalEntityKind `json:"kind,omitempty"`
+	MicroCellID    int
+	TileID         int
+	MoveFromTileID int     `json:"moveFromTileID,omitempty"`
+	MoveProgress   float64 `json:"moveProgress,omitempty"`
+	Fill           color.RGBA
+	StepTicks      int
 }
 
 type TacticalMap struct {
-	CellID        int
-	Radius        int
-	Tiles         []TacticalTile
-	MicroCells    []TacticalMicroCell
-	Entities      []TacticalEntity
-	Supply        map[ResourceType]int
-	microIndex    map[[2]int]int
-	tileIndex     map[[2]int]int
-	microOccupied map[int]int
-	tick          int
+	CellID                 int
+	Radius                 int
+	Tiles                  []TacticalTile
+	MicroCells             []TacticalMicroCell
+	Entities               []TacticalEntity
+	Supply                 map[ResourceType]int
+	CreatureSpawnRemaining int `json:"creatureSpawnRemaining,omitempty"`
+	NextCreatureSpawnTick  int `json:"nextCreatureSpawnTick,omitempty"`
+	microIndex             map[[2]int]int
+	tileIndex              map[[2]int]int
+	microOccupied          map[int]int
+	tick                   int
 }
 
 func NewTacticalMap(cell *Cell, radius int) *TacticalMap {
@@ -204,7 +219,6 @@ func NewTacticalMap(cell *Cell, radius int) *TacticalMap {
 	}
 
 	tmap.buildMicroCells()
-	tmap.spawnEntities(cell)
 	return tmap
 }
 
@@ -259,6 +273,17 @@ func (d *DeviceLayout) IsMiner() bool {
 
 func (d *DeviceLayout) FindBlueprint() DeviceKind {
 	for y := 1; y < d.Height-1; y++ {
+		for x := 1; x < d.Width-1; x++ {
+			if d.PartAt(x, y) == DevicePartMotor &&
+				d.PartAt(x-1, y) == DevicePartFrame &&
+				d.PartAt(x+1, y) == DevicePartOutput &&
+				d.PartAt(x, y-1) == DevicePartFrame &&
+				d.PartAt(x, y+1) == DevicePartHandCrank {
+				return DeviceKindAssembler
+			}
+		}
+	}
+	for y := 1; y < d.Height-1; y++ {
 		for x := 0; x < d.Width; x++ {
 			if d.PartAt(x, y) == DevicePartMotor &&
 				d.PartAt(x, y-1) == DevicePartHandCrank &&
@@ -292,9 +317,15 @@ func (d *DeviceLayout) FindBlueprint() DeviceKind {
 
 func (m *TacticalMap) Update() {
 	m.tick++
+	m.updateCreatureSpawns()
 	entityOccupied := m.entityTileOccupancy()
 	for i := range m.Entities {
 		entity := &m.Entities[i]
+		if entity.MoveProgress > 0 && entity.MoveProgress < 1 {
+			entity.MoveProgress = math.Min(1, entity.MoveProgress+1.0/36.0)
+			continue
+		}
+		entity.MoveProgress = 0
 		if entity.StepTicks <= 0 || m.tick%entity.StepTicks != 0 {
 			continue
 		}
@@ -317,12 +348,79 @@ func (m *TacticalMap) Update() {
 				continue
 			}
 			delete(entityOccupied, entity.TileID)
+			entity.MoveFromTileID = entity.TileID
+			entity.MoveProgress = 0.001
 			entity.TileID = nextID
 			entity.MicroCellID = -1
 			entityOccupied[nextID] = entity.ID
 			break
 		}
 	}
+	if m.HasDevice(DeviceKindGate) && len(m.Entities) == 0 && m.CreatureSpawnRemaining == 0 {
+		m.StartCreatureSpawn(6)
+	}
+}
+
+func (m *TacticalMap) StartCreatureSpawn(budget int) {
+	if m == nil || budget <= 0 {
+		return
+	}
+	if m.CreatureSpawnRemaining < budget {
+		m.CreatureSpawnRemaining = budget
+	}
+	if m.NextCreatureSpawnTick <= m.tick {
+		m.NextCreatureSpawnTick = m.tick + 60
+	}
+}
+
+func (m *TacticalMap) updateCreatureSpawns() {
+	if m == nil || m.CreatureSpawnRemaining <= 0 || m.tick < m.NextCreatureSpawnTick {
+		return
+	}
+	if m.spawnEdgeEntity() {
+		m.CreatureSpawnRemaining--
+	}
+	m.NextCreatureSpawnTick = m.tick + 120
+}
+
+func (m *TacticalMap) spawnEdgeEntity() bool {
+	if len(m.Tiles) == 0 {
+		return false
+	}
+	occupied := m.entityTileOccupancy()
+	start := deterministicIndex(m.CellID+m.tick, len(m.Entities), len(m.Tiles))
+	for tries := 0; tries < len(m.Tiles); tries++ {
+		tile := &m.Tiles[(start+tries)%len(m.Tiles)]
+		if !m.isEdgeTile(tile) {
+			continue
+		}
+		if _, used := occupied[tile.ID]; used {
+			continue
+		}
+		if tile.Device != nil && tile.Device.Kind != DeviceKindNone {
+			continue
+		}
+		entityID := len(m.Entities)
+		kind := tacticalEntityKind(nil, entityID)
+		m.Entities = append(m.Entities, TacticalEntity{
+			ID:             entityID,
+			Kind:           kind,
+			MicroCellID:    -1,
+			TileID:         tile.ID,
+			MoveFromTileID: tile.ID,
+			Fill:           TacticalEntityColor(kind),
+			StepTicks:      90 + deterministicIndex(m.CellID+17, entityID+3, 91),
+		})
+		return true
+	}
+	return false
+}
+
+func (m *TacticalMap) isEdgeTile(tile *TacticalTile) bool {
+	if m == nil || tile == nil {
+		return false
+	}
+	return maxInt(absIntCore(tile.Q), maxInt(absIntCore(tile.R), absIntCore(tile.S))) >= m.Radius
 }
 
 func (m *TacticalMap) entityTileOccupancy() map[int]int {
@@ -398,7 +496,6 @@ func (m *TacticalMap) Produce(dt float64, inventory map[ResourceType]int, minedT
 		m.Supply = map[ResourceType]int{}
 	}
 	hasGate := m.HasDevice(DeviceKindGate)
-	m.importGateInputs(inventory)
 	outMul := mods.outputMul()
 	costMul := mods.powerCostMul()
 	smelterOutMul := mods.smelterOutputMul()
@@ -417,51 +514,9 @@ func (m *TacticalMap) Produce(dt float64, inventory map[ResourceType]int, minedT
 			m.produceSmelter(tile, dt, m.Supply, minedTotals, smelterOutMul, smelterCostMul, decayMul, mods)
 		case DeviceKindGenerator:
 			m.produceGenerator(tile, dt, m.Supply, minedTotals, generatorPowerMul, decayMul, mods)
+		case DeviceKindAssembler:
+			m.produceAssembler(tile, dt, m.Supply, minedTotals, decayMul, mods)
 		}
-	}
-}
-
-func (m *TacticalMap) importGateInputs(global map[ResourceType]int) {
-	if global == nil {
-		return
-	}
-	needed := map[ResourceType]int{}
-	for i := range m.Tiles {
-		tile := &m.Tiles[i]
-		if tile.Device == nil || tile.Device.Kind != DeviceKindGate {
-			continue
-		}
-		for _, neighbor := range m.adjacentDeviceTiles(tile) {
-			if neighbor.Device == nil {
-				continue
-			}
-			switch neighbor.Device.Kind {
-			case DeviceKindSmelter:
-				if _, ok := SmelterOutputForInput(neighbor.Device.ConfigInput); ok {
-					needed[neighbor.Device.ConfigInput] = 12
-					needed[ResourceCoal] = 12
-				}
-			case DeviceKindGenerator:
-				needed[ResourceCoal] = 12
-			}
-		}
-	}
-	for resource, target := range needed {
-		if resource == ResourceNone || target <= 0 {
-			continue
-		}
-		missing := target - m.Supply[resource]
-		if missing <= 0 {
-			continue
-		}
-		if missing > global[resource] {
-			missing = global[resource]
-		}
-		if missing <= 0 {
-			continue
-		}
-		global[resource] -= missing
-		m.Supply[resource] += missing
 	}
 }
 
@@ -593,6 +648,50 @@ func (m *TacticalMap) produceGenerator(tile *TacticalTile, dt float64, inventory
 		}
 		neighbor.PowerBuffer = math.Min(1, neighbor.PowerBuffer+generated)
 	}
+}
+
+func (m *TacticalMap) produceAssembler(tile *TacticalTile, dt float64, inventory map[ResourceType]int, minedTotals map[ResourceType]int, decayMul float64, mods *ProductionMods) {
+	if !m.HasAdjacentDevice(tile, DeviceKindGate) {
+		tile.PowerBuffer = math.Max(0, tile.PowerBuffer-dt*0.04*decayMul)
+		return
+	}
+	if inventory == nil {
+		return
+	}
+	def := DeviceDefinition(tile.Device.Kind)
+	if def.Kind == DeviceKindNone {
+		return
+	}
+	tile.PowerBuffer = math.Max(0, tile.PowerBuffer-dt*0.04*decayMul)
+	runCost := def.RunPowerCost
+	if tile.PowerBuffer < runCost {
+		return
+	}
+	tile.ResourceCarry += def.OutputPerSecond * dt
+	batches := int(tile.ResourceCarry)
+	if batches <= 0 {
+		return
+	}
+	if inventory[ResourceIronIngot]/2 < batches {
+		batches = inventory[ResourceIronIngot] / 2
+	}
+	if inventory[ResourceCopperIngot] < batches {
+		batches = inventory[ResourceCopperIngot]
+	}
+	if batches <= 0 {
+		return
+	}
+	tile.PowerBuffer -= runCost
+	if mods != nil && mods.ProductivePower != nil {
+		*mods.ProductivePower += runCost
+	}
+	inventory[ResourceIronIngot] -= batches * 2
+	inventory[ResourceCopperIngot] -= batches
+	inventory[ResourceGear] += batches
+	if minedTotals != nil {
+		minedTotals[ResourceGear] += batches
+	}
+	tile.ResourceCarry -= float64(batches)
 }
 
 func SmelterOutputForInput(input ResourceType) (ResourceType, bool) {
@@ -737,6 +836,14 @@ func (m *TacticalMap) Rehydrate() {
 	m.microOccupied = make(map[int]int, len(m.Entities))
 	for i := range m.Entities {
 		entity := &m.Entities[i]
+		if entity.Kind == "" {
+			entity.Kind = tacticalEntityKind(nil, entity.ID)
+		}
+		entity.Fill = TacticalEntityColor(entity.Kind)
+		if entity.MoveProgress <= 0 || entity.MoveProgress >= 1 {
+			entity.MoveProgress = 0
+			entity.MoveFromTileID = entity.TileID
+		}
 		if entity.MicroCellID >= 0 && entity.MicroCellID < len(m.MicroCells) {
 			entity.TileID = m.MicroCells[entity.MicroCellID].ParentTileID
 			entity.MicroCellID = -1
@@ -778,9 +885,6 @@ func (m *TacticalMap) buildMicroCells() {
 
 func (m *TacticalMap) spawnEntities(cell *Cell) {
 	count := 6
-	if cell.Ocean {
-		count = 4
-	}
 	m.Entities = make([]TacticalEntity, 0, count)
 	occupied := map[int]int{}
 	for i := 0; i < count && len(m.Tiles) > 0; i++ {
@@ -795,12 +899,15 @@ func (m *TacticalMap) spawnEntities(cell *Cell) {
 				continue
 			}
 			entityID := len(m.Entities)
+			kind := tacticalEntityKind(cell, i)
 			m.Entities = append(m.Entities, TacticalEntity{
-				ID:          entityID,
-				MicroCellID: -1,
-				TileID:      tileID,
-				Fill:        tacticalEntityColor(cell, i),
-				StepTicks:   12 + deterministicIndex(cell.ID+17, i+3, 36),
+				ID:             entityID,
+				Kind:           kind,
+				MicroCellID:    -1,
+				TileID:         tileID,
+				MoveFromTileID: tileID,
+				Fill:           TacticalEntityColor(kind),
+				StepTicks:      90 + deterministicIndex(cell.ID+17, i+3, 91),
 			})
 			occupied[tileID] = entityID
 			break
@@ -894,6 +1001,8 @@ func ResourceColor(resource ResourceType) color.RGBA {
 		return color.RGBA{216, 150, 92, 255}
 	case ResourceCopperIngot:
 		return color.RGBA{230, 182, 128, 255}
+	case ResourceGear:
+		return color.RGBA{202, 188, 126, 255}
 	case ResourceCoal:
 		return color.RGBA{82, 84, 90, 255}
 	case ResourceCrystal:
@@ -947,6 +1056,8 @@ func DeviceKindLabel(kind DeviceKind) string {
 		return "gate"
 	case DeviceKindGenerator:
 		return "generator"
+	case DeviceKindAssembler:
+		return "assembler"
 	default:
 		return "idle"
 	}
@@ -1035,19 +1146,44 @@ func DeviceDefinition(kind DeviceKind) DeviceDef {
 			RunPowerCost:    0.9,
 			OutputPerSecond: 0.25,
 		}
+	case DeviceKindAssembler:
+		return DeviceDef{
+			Kind:  kind,
+			Label: "assembler",
+			Ports: []PortDef{
+				{Kind: PortInput, Channel: ChannelPower, Side: 0},
+				{Kind: PortInput, Channel: ChannelItem, Resource: ResourceIronIngot, Side: 1},
+				{Kind: PortInput, Channel: ChannelItem, Resource: ResourceCopperIngot, Side: 2},
+				{Kind: PortOutput, Channel: ChannelItem, Resource: ResourceGear, Side: 3},
+			},
+			RunPowerCost:    0.18,
+			OutputPerSecond: 0.35,
+		}
 	default:
 		return DeviceDef{}
 	}
 }
 
-func tacticalEntityColor(cell *Cell, index int) color.RGBA {
-	palette := []color.RGBA{
-		{102, 196, 98, 255},
-		{214, 88, 82, 255},
-		{126, 212, 110, 255},
-		{196, 72, 68, 255},
+func tacticalEntityKind(_ *Cell, index int) TacticalEntityKind {
+	switch index % 3 {
+	case 0:
+		return TacticalEntityGreen
+	case 1:
+		return TacticalEntityRed
+	default:
+		return TacticalEntityPurple
 	}
-	return palette[index%len(palette)]
+}
+
+func TacticalEntityColor(kind TacticalEntityKind) color.RGBA {
+	switch kind {
+	case TacticalEntityRed:
+		return color.RGBA{214, 88, 82, 255}
+	case TacticalEntityPurple:
+		return color.RGBA{160, 104, 224, 255}
+	default:
+		return color.RGBA{102, 196, 98, 255}
+	}
 }
 
 func deterministicIndex(seed, salt, mod int) int {
@@ -1080,4 +1216,11 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func absIntCore(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
 }

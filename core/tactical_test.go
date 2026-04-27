@@ -4,7 +4,7 @@ import "testing"
 
 func TestCoalGeneratorMinerLoopIsNetPositive(t *testing.T) {
 	tmap := &TacticalMap{
-		Supply: map[ResourceType]int{},
+		Supply: map[ResourceType]int{ResourceCoal: 1},
 		tileIndex: map[[2]int]int{
 			{0, 0}: 0,
 			{1, 0}: 1,
@@ -36,7 +36,7 @@ func TestCoalGeneratorMinerLoopIsNetPositive(t *testing.T) {
 			},
 		},
 	}
-	inventory := map[ResourceType]int{ResourceCoal: 1}
+	inventory := map[ResourceType]int{}
 	mined := map[ResourceType]int{}
 	mods := &ProductionMods{
 		OutputMul:         1,
@@ -192,6 +192,57 @@ func TestCoalPowerResearchIncludesAutomatedMiner(t *testing.T) {
 		if ingredient.RecipeID == "crank" {
 			t.Fatal("automated miner should not require a crank ingredient")
 		}
+	}
+}
+
+func TestAssemblyStageIncludesAssemblerAndGearProduction(t *testing.T) {
+	progression := DefaultProgressionBook()
+	coal, ok := progression.Stage("coal_power")
+	if !ok {
+		t.Fatal("expected coal_power stage")
+	}
+	if coal.NextStageID != "assembly" {
+		t.Fatalf("expected coal_power to advance to assembly, got %q", coal.NextStageID)
+	}
+	stage, ok := progression.Stage("assembly")
+	if !ok {
+		t.Fatal("expected assembly stage")
+	}
+	if !containsString(stage.KnownRecipes, "assembler") {
+		t.Fatal("expected assembler research in assembly")
+	}
+
+	recipes := DefaultRecipeBook()
+	assembler, ok := recipes.Recipe("assembler")
+	if !ok {
+		t.Fatal("expected assembler recipe")
+	}
+	if assembler.Device != DeviceKindAssembler {
+		t.Fatalf("expected assembler recipe to build assembler, got %v", assembler.Device)
+	}
+
+	tmap := &TacticalMap{
+		Supply: map[ResourceType]int{
+			ResourceIronIngot:   2,
+			ResourceCopperIngot: 1,
+		},
+		tileIndex: map[[2]int]int{
+			{0, 0}: 0,
+			{1, 0}: 1,
+		},
+		Tiles: []TacticalTile{
+			{ID: 0, Q: 0, R: 0, Device: &DeviceLayout{Kind: DeviceKindGate}},
+			{ID: 1, Q: 1, R: 0, PowerBuffer: 1, ResourceCarry: 0.99, Device: &DeviceLayout{Kind: DeviceKindAssembler}},
+		},
+	}
+	mined := map[ResourceType]int{}
+	tmap.Produce(1, nil, mined, &ProductionMods{})
+
+	if tmap.Supply[ResourceGear] == 0 {
+		t.Fatal("expected assembler to produce gears into local supply")
+	}
+	if mined[ResourceGear] == 0 {
+		t.Fatal("expected gear production to count toward progression totals")
 	}
 }
 

@@ -24,6 +24,7 @@ var fullInventoryResources = []core.ResourceType{
 	core.ResourceCoal,
 	core.ResourceIronIngot,
 	core.ResourceCopperIngot,
+	core.ResourceGear,
 	core.ResourceCrystal,
 }
 
@@ -114,9 +115,14 @@ func (g *Game) drawInventoryOverlay(screen *ebiten.Image) {
 	drawRectOutline(screen, float32(bx), float32(by), float32(bw), float32(bh), color.RGBA{188, 214, 238, 255})
 	g.drawLeftArrow(screen, bx+bw*0.5, by+bh*0.5, 8, color.RGBA{228, 236, 244, 255})
 
+	title, inventory := g.inventoryDisplaySource()
+	if inventory == nil {
+		inventory = map[core.ResourceType]int{}
+	}
+
 	titleX := cx + 64
 	titleY := cy + 16
-	ebitenutil.DebugPrintAt(screen, "INVENTORY", int(titleX), int(titleY))
+	ebitenutil.DebugPrintAt(screen, title, int(titleX), int(titleY))
 
 	textX := cx + 24
 	rowY := cy + 60
@@ -129,7 +135,7 @@ func (g *Game) drawInventoryOverlay(screen *ebiten.Image) {
 		} else {
 			labelX = int(textX)
 		}
-		ebitenutil.DebugPrintAt(screen, fmt.Sprintf("%-12s %d", resourceShortLabel(r), g.inventory[r]), labelX, int(rowY))
+		ebitenutil.DebugPrintAt(screen, fmt.Sprintf("%-12s %d", resourceShortLabel(r), inventory[r]), labelX, int(rowY))
 		rowY += 18
 	}
 }
