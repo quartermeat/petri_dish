@@ -28,6 +28,7 @@ const (
 	ResourceGear        ResourceType = "gear"
 	ResourceCoal        ResourceType = "coal"
 	ResourceCrystal     ResourceType = "crystal"
+	ResourceFieldData   ResourceType = "field data"
 )
 
 type DevicePart int
@@ -1007,6 +1008,8 @@ func ResourceColor(resource ResourceType) color.RGBA {
 		return color.RGBA{82, 84, 90, 255}
 	case ResourceCrystal:
 		return color.RGBA{147, 228, 246, 255}
+	case ResourceFieldData:
+		return color.RGBA{124, 212, 190, 255}
 	default:
 		return color.RGBA{164, 164, 154, 255}
 	}

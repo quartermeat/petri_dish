@@ -162,17 +162,17 @@ func TestTacticalEntitiesUseTileGridAndAvoidDevices(t *testing.T) {
 	}
 }
 
-func TestCoalPowerResearchIncludesAutomatedMiner(t *testing.T) {
+func TestCoalPowerTechIncludesAutomatedMiner(t *testing.T) {
 	progression := DefaultProgressionBook()
 	stage, ok := progression.Stage("coal_power")
 	if !ok {
 		t.Fatal("expected coal_power stage")
 	}
 	if !containsString(stage.KnownRecipes, "generator") {
-		t.Fatal("expected generator research in coal_power")
+		t.Fatal("expected generator tech in coal_power")
 	}
 	if !containsString(stage.KnownRecipes, "miner") {
-		t.Fatal("expected automated miner research in coal_power")
+		t.Fatal("expected automated miner tech in coal_power")
 	}
 
 	recipes := DefaultRecipeBook()
@@ -209,7 +209,7 @@ func TestAssemblyStageIncludesAssemblerAndGearProduction(t *testing.T) {
 		t.Fatal("expected assembly stage")
 	}
 	if !containsString(stage.KnownRecipes, "assembler") {
-		t.Fatal("expected assembler research in assembly")
+		t.Fatal("expected assembler tech in assembly")
 	}
 
 	recipes := DefaultRecipeBook()

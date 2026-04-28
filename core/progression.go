@@ -85,6 +85,7 @@ const (
 	PerkBufferDecay     PerkKind = "buffer_decay"     // -Magnitude (fraction) of buffer decay rate
 	PerkHoldPower       PerkKind = "hold_power"       // hold on starter miner to transfer power continuously
 	PerkResourceGift    PerkKind = "resource_gift"    // one-shot: add Magnitude units of Resource
+	PerkGateUplink      PerkKind = "gate_uplink"      // one-shot: unlock GATE uplink/deposit
 )
 
 type PerkDef struct {
@@ -122,6 +123,7 @@ func DefaultProgressionBook() *ProgressionBook {
 					260,
 				},
 				PerkPool: []string{
+					"gate-uplink",
 					"sturdy-crank",
 					"heavy-crank",
 					"patient-drill",
@@ -155,6 +157,12 @@ func DefaultProgressionBook() *ProgressionBook {
 						Label:    "find iron ore",
 						Resource: ResourceIronOre,
 						Amount:   1,
+					},
+					{
+						Kind:     GoalExportResource,
+						Label:    "collect field data",
+						Resource: ResourceFieldData,
+						Amount:   4,
 					},
 				},
 			},
@@ -591,6 +599,14 @@ func DefaultPerkBook() *PerkBook {
 				Kind:        PerkCrankPower,
 				StageID:     "bootstrap",
 				Magnitude:   0.25,
+			},
+			"gate-uplink": {
+				ID:          "gate-uplink",
+				Title:       "Gate Uplink",
+				Description: "Unlock GATE uplink deposits.",
+				Kind:        PerkGateUplink,
+				StageID:     "bootstrap",
+				OneShot:     true,
 			},
 			"heavy-crank": {
 				ID:          "heavy-crank",

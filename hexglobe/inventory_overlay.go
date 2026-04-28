@@ -26,6 +26,7 @@ var fullInventoryResources = []core.ResourceType{
 	core.ResourceCopperIngot,
 	core.ResourceGear,
 	core.ResourceCrystal,
+	core.ResourceFieldData,
 }
 
 func (g *Game) inventoryOverlayActive() bool {

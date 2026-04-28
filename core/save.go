@@ -22,23 +22,24 @@ type SavedTacticalEntry struct {
 }
 
 type SaveData struct {
-	Version           string               `json:"version"`
-	WorldSeed         int64                `json:"worldSeed"`
-	Inventory         map[ResourceType]int `json:"inventory"`
-	PartInventory     map[DevicePart]int   `json:"partInventory,omitempty"`
-	StarterMinerCount *int                 `json:"starterMinerCount,omitempty"`
-	StarterGateCount  *int                 `json:"starterGateCount,omitempty"`
-	TutorialSeen      []string             `json:"tutorialSeen,omitempty"`
-	Camera            SavedCamera          `json:"camera"`
-	Selected          int                  `json:"selectedCell"`
-	CurrentStage      string               `json:"currentStage,omitempty"`
-	KnownRecipes      []string             `json:"knownRecipes,omitempty"`
-	MinedTotals       map[ResourceType]int `json:"minedTotals,omitempty"`
-	ActivePerks       []string             `json:"activePerks,omitempty"`
-	StagePowerSpent   map[string]float64   `json:"stagePowerSpent,omitempty"`
-	PerksAwarded      map[string]int       `json:"perksAwarded,omitempty"`
-	CreaturesEnabled  bool                 `json:"creaturesEnabled,omitempty"`
-	Tactical          []SavedTacticalEntry `json:"tactical"`
+	Version            string               `json:"version"`
+	WorldSeed          int64                `json:"worldSeed"`
+	Inventory          map[ResourceType]int `json:"inventory"`
+	PartInventory      map[DevicePart]int   `json:"partInventory,omitempty"`
+	StarterMinerCount  *int                 `json:"starterMinerCount,omitempty"`
+	StarterGateCount   *int                 `json:"starterGateCount,omitempty"`
+	TutorialSeen       []string             `json:"tutorialSeen,omitempty"`
+	Camera             SavedCamera          `json:"camera"`
+	Selected           int                  `json:"selectedCell"`
+	CurrentStage       string               `json:"currentStage,omitempty"`
+	KnownRecipes       []string             `json:"knownRecipes,omitempty"`
+	MinedTotals        map[ResourceType]int `json:"minedTotals,omitempty"`
+	ActivePerks        []string             `json:"activePerks,omitempty"`
+	StagePowerSpent    map[string]float64   `json:"stagePowerSpent,omitempty"`
+	PerksAwarded       map[string]int       `json:"perksAwarded,omitempty"`
+	CreaturesEnabled   bool                 `json:"creaturesEnabled,omitempty"`
+	GateUplinkUnlocked bool                 `json:"gateUplinkUnlocked,omitempty"`
+	Tactical           []SavedTacticalEntry `json:"tactical"`
 }
 
 // LoadSave reads and parses save.json from dir. Returns (nil, nil) if no

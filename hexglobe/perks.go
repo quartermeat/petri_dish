@@ -3,10 +3,12 @@ package hexglobe
 import (
 	"fmt"
 	"image/color"
+	"math"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
+	"github.com/hajimehoshi/ebiten/v2/vector"
 	"hex_globe/core"
 )
 
@@ -14,6 +16,7 @@ const (
 	perkChoiceCount       = 3
 	perkChoiceTapCooldown = 1.5 // seconds before taps register, so heated-tap players can read
 	perkChoiceSelectHold  = 0.18
+	perkCelebrationLength = 1.35
 )
 
 type perkChoiceState struct {
@@ -134,9 +137,25 @@ func (g *Game) maybeTriggerPerkChoice() {
 // Permanent perks can be picked repeatedly and stack cumulatively.
 func (g *Game) openPerkChoice(stage core.ProgressStage) {
 	pool := make([]core.PerkDef, 0, len(stage.PerkPool))
+	if stage.ID == "bootstrap" && !g.gateUplinkUnlocked {
+		if def, ok := g.perks.Perk("gate-uplink"); ok {
+			pool = append(pool, def)
+		}
+		g.perkChoice = &perkChoiceState{
+			stageID:       stage.ID,
+			perks:         pool,
+			cooldown:      perkChoiceTapCooldown,
+			selectedIndex: -1,
+		}
+		g.perkCelebrationTimer = perkCelebrationLength
+		return
+	}
 	for _, id := range stage.PerkPool {
 		def, ok := g.perks.Perk(id)
 		if !ok {
+			continue
+		}
+		if def.Kind == core.PerkGateUplink && g.gateUplinkUnlocked {
 			continue
 		}
 		pool = append(pool, def)
@@ -163,6 +182,7 @@ func (g *Game) openPerkChoice(stage core.ProgressStage) {
 		cooldown:      perkChoiceTapCooldown,
 		selectedIndex: -1,
 	}
+	g.perkCelebrationTimer = perkCelebrationLength
 }
 
 // applyPerk records the picked perk, applies any one-shot effect, and
@@ -187,6 +207,8 @@ func (g *Game) applyPerk(def core.PerkDef) {
 				}
 				g.minedTotals[def.Resource] += amount
 			}
+		case core.PerkGateUplink:
+			g.gateUplinkUnlocked = true
 		}
 	} else {
 		g.activePerks = append(g.activePerks, def.ID)
@@ -327,6 +349,13 @@ func (g *Game) handlePerkChoiceInput() {
 	}
 }
 
+func (g *Game) advancePerkCelebration(dt float64) {
+	if g.perkCelebrationTimer <= 0 {
+		return
+	}
+	g.perkCelebrationTimer = math.Max(0, g.perkCelebrationTimer-dt)
+}
+
 func (g *Game) perkCardRect(index int) (float64, float64, float64, float64) {
 	w := 320.0
 	h := 86.0
@@ -342,7 +371,13 @@ func (g *Game) drawPerkChoice(screen *ebiten.Image) {
 	if g.perkChoice == nil {
 		return
 	}
-	drawFilledRect(screen, 0, 0, float32(g.screenWidth), float32(g.screenHeight), color.RGBA{0, 0, 0, 192})
+	g.drawPerkCelebration(screen)
+	overlayAlpha := uint8(192)
+	if g.perkCelebrationTimer > 0 {
+		progress := 1 - g.perkCelebrationTimer/perkCelebrationLength
+		overlayAlpha = uint8(116 + 76*clampRange(progress, 0, 1))
+	}
+	drawFilledRect(screen, 0, 0, float32(g.screenWidth), float32(g.screenHeight), color.RGBA{0, 0, 0, overlayAlpha})
 
 	headerY := 0.0
 	if len(g.perkChoice.perks) > 0 {
@@ -390,5 +425,59 @@ func (g *Game) drawPerkChoice(screen *ebiten.Image) {
 			tag = "selected"
 		}
 		g.drawTintedDebugTextBlock(screen, cx+16, cy+58, []string{tag}, 1, float32(text.R)/255, float32(text.G)/255, float32(text.B)/255)
+	}
+}
+
+func (g *Game) drawPerkCelebration(screen *ebiten.Image) {
+	if g.perkCelebrationTimer <= 0 {
+		return
+	}
+	w := float64(g.screenWidth)
+	h := float64(g.screenHeight)
+	cx := w * 0.5
+	cy := h * 0.43
+	progress := 1 - g.perkCelebrationTimer/perkCelebrationLength
+	progress = clampRange(progress, 0, 1)
+	easeOut := 1 - math.Pow(1-progress, 3)
+	fade := clampRange(g.perkCelebrationTimer/0.52, 0, 1)
+
+	drawFilledRect(screen, 0, 0, float32(w), float32(h), color.RGBA{14, 31, 42, uint8(170 * fade)})
+	maxRadius := math.Hypot(w, h)
+	for i := 0; i < 18; i++ {
+		angle := float64(i)/18*math.Pi*2 + g.animationTime*0.18
+		rayW := maxRadius * 0.045
+		inner := 32.0
+		outer := maxRadius * (0.28 + 0.62*easeOut)
+		points := []screenPoint{
+			{x: cx + math.Cos(angle-0.035)*inner, y: cy + math.Sin(angle-0.035)*inner},
+			{x: cx + math.Cos(angle+0.035)*inner, y: cy + math.Sin(angle+0.035)*inner},
+			{x: cx + math.Cos(angle+rayW/outer)*outer, y: cy + math.Sin(angle+rayW/outer)*outer},
+			{x: cx + math.Cos(angle-rayW/outer)*outer, y: cy + math.Sin(angle-rayW/outer)*outer},
+		}
+		alpha := uint8(32 * fade)
+		if i%3 == 0 {
+			alpha = uint8(52 * fade)
+		}
+		drawScreenPolygon(screen, points, color.RGBA{76, 230, 190, alpha})
+	}
+
+	for i := 0; i < 4; i++ {
+		r := float32(54 + float64(i)*58 + easeOut*150)
+		alpha := uint8(math.Max(0, (120-float64(i)*18)*fade))
+		vector.StrokeCircle(screen, float32(cx), float32(cy), r, float32(2+i), color.RGBA{255, 214, 112, alpha}, false)
+	}
+	drawDisc(screen, float32(cx), float32(cy), float32(40+80*(1-progress)), color.RGBA{82, 244, 184, uint8(84 * fade)})
+
+	for i := 0; i < 34; i++ {
+		angle := float64(i)*2.399963 + g.animationTime*0.28
+		dist := (48 + float64((i*37)%230)) * (0.25 + 0.95*easeOut)
+		px := cx + math.Cos(angle)*dist
+		py := cy + math.Sin(angle)*dist*0.72
+		size := float32(2.2 + float64(i%5)*0.8)
+		col := color.RGBA{255, 226, 132, uint8(210 * fade)}
+		if i%2 == 0 {
+			col = color.RGBA{108, 242, 212, uint8(190 * fade)}
+		}
+		drawDisc(screen, float32(px), float32(py), size, col)
 	}
 }
