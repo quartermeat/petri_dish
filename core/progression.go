@@ -118,9 +118,9 @@ func DefaultProgressionBook() *ProgressionBook {
 				},
 				KnownRecipes: nil,
 				PerkPowerThresholds: []float64{
-					40,
-					120,
-					260,
+					2,
+					4,
+					8,
 				},
 				PerkPool: []string{
 					"gate-uplink",
@@ -150,7 +150,7 @@ func DefaultProgressionBook() *ProgressionBook {
 						Kind:     GoalMineResource,
 						Label:    "mine stone",
 						Resource: ResourceStone,
-						Amount:   10,
+						Amount:   12,
 					},
 					{
 						Kind:     GoalDiscoverResource,
@@ -159,8 +159,14 @@ func DefaultProgressionBook() *ProgressionBook {
 						Amount:   1,
 					},
 					{
-						Kind:     GoalExportResource,
+						Kind:     GoalMineResource,
 						Label:    "collect field data",
+						Resource: ResourceFieldData,
+						Amount:   4,
+					},
+					{
+						Kind:     GoalExportResource,
+						Label:    "transfer field data",
 						Resource: ResourceFieldData,
 						Amount:   4,
 					},

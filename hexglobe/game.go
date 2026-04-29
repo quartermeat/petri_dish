@@ -107,8 +107,9 @@ type Game struct {
 	version               string
 	autoSaveTimer         float64
 	animationTime         float64
-	depositBackCharge     float64
-	depositPumpTimer      float64
+	fieldDataPopups       []fieldDataPopup
+	fieldDataScanCarry    map[fieldDataTileKey]float64
+	uplinkPackets         []uplinkPacket
 	perkCelebrationTimer  float64
 	tutorialLines         []string
 	tutorialSeen          map[string]bool
@@ -123,6 +124,8 @@ type Game struct {
 	lastTapCellID         int
 	lastTapTime           time.Time
 	inventoryOverlay      *inventoryOverlayState
+	expandedTechRecipeID  string
+	expandedBuildRecipeID string
 	perks                 *core.PerkBook
 	activePerks           []string
 	stagePowerSpent       map[string]float64
@@ -159,6 +162,28 @@ type buildPlan struct {
 type mugMoveState struct {
 	path     []int
 	progress float64
+}
+
+type fieldDataPopup struct {
+	x      float64
+	y      float64
+	amount int
+	timer  float64
+}
+
+type fieldDataTileKey struct {
+	cellID int
+	tileID int
+}
+
+type uplinkPacket struct {
+	x        float64
+	y        float64
+	offsetX  float64
+	delay    float64
+	timer    float64
+	duration float64
+	resource core.ResourceType
 }
 
 type saveOverlayStage int
@@ -228,28 +253,29 @@ func init() {
 
 func NewGame() *Game {
 	g := &Game{
-		screenWidth:      defaultScreenWidth,
-		screenHeight:     defaultScreenHeight,
-		zoom:             1,
-		dragTouchID:      -1,
-		pinchTouchA:      -1,
-		pinchTouchB:      -1,
-		settingsTouch:    -1,
-		tacticalMaps:     map[int]*core.TacticalMap{},
-		tacticalID:       -1,
-		tacticalTile:     -1,
-		tacticalZoom:     1,
-		progression:      core.DefaultProgressionBook(),
-		recipes:          core.DefaultRecipeBook(),
-		perks:            core.DefaultPerkBook(),
-		knownRecipes:     map[string]bool{},
-		stagePowerSpent:  map[string]float64{},
-		perksAwarded:     map[string]int{},
-		perkRand:         rand.New(rand.NewSource(time.Now().UnixNano())),
-		lastTapCellID:    -1,
-		configTileID:     -1,
-		mugMoves:         map[int]*mugMoveState{},
-		creaturesEnabled: false,
+		screenWidth:        defaultScreenWidth,
+		screenHeight:       defaultScreenHeight,
+		zoom:               1,
+		dragTouchID:        -1,
+		pinchTouchA:        -1,
+		pinchTouchB:        -1,
+		settingsTouch:      -1,
+		tacticalMaps:       map[int]*core.TacticalMap{},
+		tacticalID:         -1,
+		tacticalTile:       -1,
+		tacticalZoom:       1,
+		progression:        core.DefaultProgressionBook(),
+		recipes:            core.DefaultRecipeBook(),
+		perks:              core.DefaultPerkBook(),
+		knownRecipes:       map[string]bool{},
+		stagePowerSpent:    map[string]float64{},
+		perksAwarded:       map[string]int{},
+		perkRand:           rand.New(rand.NewSource(time.Now().UnixNano())),
+		lastTapCellID:      -1,
+		configTileID:       -1,
+		mugMoves:           map[int]*mugMoveState{},
+		fieldDataScanCarry: map[fieldDataTileKey]float64{},
+		creaturesEnabled:   false,
 	}
 	g.installFreshWorld(time.Now().UnixNano())
 	return g
@@ -303,6 +329,9 @@ func (g *Game) installFreshWorld(seed int64) {
 	g.mugDragStartTile = -1
 	g.mugDragTargetTile = -1
 	g.mugMoves = map[int]*mugMoveState{}
+	g.fieldDataPopups = nil
+	g.fieldDataScanCarry = map[fieldDataTileKey]float64{}
+	g.uplinkPackets = nil
 	g.creaturesEnabled = false
 	g.gateUplinkUnlocked = false
 	if g.perks == nil {
@@ -440,6 +469,9 @@ func (g *Game) applySave(data *core.SaveData) {
 			g.perksAwarded[stage] = count
 		}
 	}
+	g.fieldDataPopups = nil
+	g.fieldDataScanCarry = map[fieldDataTileKey]float64{}
+	g.uplinkPackets = nil
 	g.creaturesEnabled = data.CreaturesEnabled
 	g.gateUplinkUnlocked = data.GateUplinkUnlocked
 	for _, entry := range data.Tactical {
@@ -800,7 +832,8 @@ func (g *Game) Update() error {
 	}
 	dt := 1.0 / 60.0
 	g.animationTime += dt
-	g.advanceDepositAnimation(dt)
+	g.advanceFieldDataPopups(dt)
+	g.advanceUplinkPackets(dt)
 	g.advancePerkCelebration(dt)
 	if g.modalActive() {
 		g.handleModalInput()
@@ -827,7 +860,9 @@ func (g *Game) Update() error {
 	}
 	mods := g.productionMods()
 	for _, tmap := range g.tacticalMaps {
+		before := fieldDataMiningSnapshot(tmap)
 		tmap.Produce(dt, g.inventory, g.minedTotals, mods)
+		g.collectFieldDataFromMining(tmap, before)
 	}
 	g.advanceTacticalDeviceMotion(dt)
 	if mods.ProductivePower != nil && *mods.ProductivePower > 0 {
@@ -1209,9 +1244,17 @@ func (g *Game) applyDrag(x, y int) {
 	dy := y - g.dragLastY
 	g.dragLastX = x
 	g.dragLastY = y
-	g.globe.CameraLon -= float64(dx) * 0.012
-	g.globe.CameraLat += float64(dy) * 0.006
+	panScale := g.strategicPanScale()
+	g.globe.CameraLon -= float64(dx) * 0.012 * panScale
+	g.globe.CameraLat += float64(dy) * 0.006 * panScale
 	g.clampCamera()
+}
+
+func (g *Game) strategicPanScale() float64 {
+	if g.zoom <= 0 {
+		return 1
+	}
+	return clampRange(1/math.Pow(g.zoom, 0.85), 0.22, 1.25)
 }
 
 func (g *Game) setZoom(zoom float64) {
@@ -1915,6 +1958,8 @@ func (g *Game) drawTactical(screen *ebiten.Image) {
 	screen.Fill(color.RGBA{10, 15, 24, 255})
 	g.drawBackdrop(screen)
 	g.drawTacticalMap(screen)
+	g.drawFieldDataPopups(screen)
+	g.drawUplinkPackets(screen)
 	g.drawTacticalStageGoals(screen)
 	g.drawTacticalBackButton(screen)
 	g.drawTacticalDepositButton(screen)
@@ -2425,8 +2470,6 @@ func (g *Game) exportCurrentRegionToGlobal() bool {
 		g.inventory = map[core.ResourceType]int{}
 	}
 	exported := false
-	exportedTypes := 0
-	exportedUnits := 0
 	for resource, amount := range tmap.Supply {
 		if resource == core.ResourceNone || amount <= 0 {
 			continue
@@ -2434,25 +2477,11 @@ func (g *Game) exportCurrentRegionToGlobal() bool {
 		g.inventory[resource] += amount
 		tmap.Supply[resource] = 0
 		exported = true
-		exportedTypes++
-		exportedUnits += amount
 	}
 	if exported {
-		g.inventory[core.ResourceFieldData] += fieldDataForDeposit(exportedTypes, exportedUnits)
 		g.saveSoon()
 	}
 	return exported
-}
-
-func fieldDataForDeposit(resourceTypes, units int) int {
-	if resourceTypes <= 0 || units <= 0 {
-		return 0
-	}
-	data := 1 + resourceTypes + units/12
-	if data < 1 {
-		return 1
-	}
-	return data
 }
 
 func (g *Game) depositCurrentRegionToGlobal() bool {
@@ -2462,21 +2491,280 @@ func (g *Game) depositCurrentRegionToGlobal() bool {
 	if !g.currentRegionHasDepositableSupply() {
 		return false
 	}
+	g.spawnUplinkPackets()
 	if !g.exportCurrentRegionToGlobal() {
 		return false
 	}
-	g.depositBackCharge = 1
-	g.depositPumpTimer = 0.34
 	return true
 }
 
-func (g *Game) advanceDepositAnimation(dt float64) {
-	if g.depositPumpTimer > 0 {
-		g.depositPumpTimer = math.Max(0, g.depositPumpTimer-dt)
+func (g *Game) spawnUplinkPackets() {
+	tmap := g.currentTacticalMap()
+	if tmap == nil || len(tmap.Supply) == 0 {
+		return
 	}
-	if g.depositBackCharge > 0 {
-		g.depositBackCharge = math.Max(0, g.depositBackCharge-dt*0.55)
+	gate := tacticalGateTile(tmap)
+	if gate == nil {
+		return
 	}
+	cx, cy := g.tacticalCenter()
+	scale := g.tacticalTileScale()
+	x := cx + g.tacticalPanX + gate.Center.X*scale
+	y := cy + g.tacticalPanY + gate.Center.Y*scale - scale*0.18
+	resources := make([]core.ResourceType, 0, len(tmap.Supply))
+	totalItems := 0
+	for resource, amount := range tmap.Supply {
+		if resource != core.ResourceNone && amount > 0 {
+			resources = append(resources, resource)
+			totalItems += amount
+		}
+	}
+	if totalItems <= 0 {
+		return
+	}
+	sort.Slice(resources, func(i, j int) bool { return resources[i] < resources[j] })
+	const totalDuration = 1.45
+	travelDuration := clampRange(0.98-float64(totalItems)*0.012, 0.42, 0.98)
+	emitWindow := math.Max(0, totalDuration-travelDuration)
+	delayStep := 0.0
+	if totalItems > 1 {
+		delayStep = emitWindow / float64(totalItems-1)
+	}
+	packetIndex := 0
+	for _, resource := range resources {
+		amount := tmap.Supply[resource]
+		for i := 0; i < amount; i++ {
+			lane := float64((packetIndex%5)-2) * 4
+			g.uplinkPackets = append(g.uplinkPackets, uplinkPacket{
+				x:        x,
+				y:        y,
+				offsetX:  lane,
+				delay:    float64(packetIndex) * delayStep,
+				timer:    travelDuration,
+				duration: travelDuration,
+				resource: resource,
+			})
+			packetIndex++
+		}
+	}
+}
+
+func tacticalGateTile(tmap *core.TacticalMap) *core.TacticalTile {
+	if tmap == nil {
+		return nil
+	}
+	for i := range tmap.Tiles {
+		tile := &tmap.Tiles[i]
+		if tile.Device != nil && tile.Device.Kind == core.DeviceKindGate {
+			return tile
+		}
+	}
+	return nil
+}
+
+func (g *Game) advanceUplinkPackets(dt float64) {
+	if len(g.uplinkPackets) == 0 {
+		return
+	}
+	out := g.uplinkPackets[:0]
+	for _, packet := range g.uplinkPackets {
+		if packet.delay > 0 {
+			packet.delay -= dt
+			out = append(out, packet)
+			continue
+		}
+		packet.timer -= dt
+		if packet.timer > 0 {
+			out = append(out, packet)
+		}
+	}
+	g.uplinkPackets = out
+}
+
+func (g *Game) drawUplinkPackets(screen *ebiten.Image) {
+	for _, packet := range g.uplinkPackets {
+		if packet.delay > 0 {
+			continue
+		}
+		g.drawUplinkPacket(screen, packet)
+	}
+}
+
+func (g *Game) drawUplinkPacket(screen *ebiten.Image, packet uplinkPacket) {
+	duration := packet.duration
+	if duration <= 0 {
+		duration = 0.8
+	}
+	progress := clampRange(1-packet.timer/duration, 0, 1)
+	fade := clampRange(packet.timer/0.22, 0, 1)
+	ease := progress * progress * (3 - 2*progress)
+	startY := packet.y
+	endY := -24.0
+	px := packet.x + packet.offsetX
+	py := startY + (endY-startY)*ease
+	col := core.ResourceColor(packet.resource)
+	col.A = uint8(72 * fade)
+	vector.StrokeLine(screen, float32(px), float32(startY), float32(px), float32(py), 2, col, false)
+	g.drawUplinkItemIcon(screen, px, py, packet.resource, fade)
+}
+
+func (g *Game) drawUplinkItemIcon(screen *ebiten.Image, x, y float64, resource core.ResourceType, alpha float64) {
+	if resource == core.ResourceFieldData {
+		g.drawFloppyIcon(screen, x, y, 14, alpha)
+		return
+	}
+	if resource != core.ResourceStone {
+		if sprite := tacticalResourceSprite(resource); sprite != nil {
+			drawCenteredSprite(screen, sprite, x, y, 14, 1, 1, 0.18*alpha, color.RGBA{})
+			return
+		}
+	}
+	col := core.ResourceColor(resource)
+	col.A = uint8(230 * alpha)
+	switch resource {
+	case core.ResourceStone:
+		points := []screenPoint{
+			{x: x, y: y - 5},
+			{x: x + 5, y: y - 1},
+			{x: x + 3, y: y + 5},
+			{x: x - 4, y: y + 4},
+			{x: x - 6, y: y - 2},
+		}
+		drawScreenPolygon(screen, points, col)
+	case core.ResourceIronIngot, core.ResourceCopperIngot:
+		drawRoundedRect(screen, float32(x-6), float32(y-3), 12, 6, 2, col)
+	case core.ResourceGear:
+		drawDisc(screen, float32(x), float32(y), 5, col)
+		drawDisc(screen, float32(x), float32(y), 2, color.RGBA{10, 15, 24, uint8(255 * alpha)})
+	default:
+		drawDisc(screen, float32(x), float32(y), 4, col)
+	}
+}
+
+const fieldDataUnitsPerSample = 3.0
+
+func fieldDataMiningSnapshot(tmap *core.TacticalMap) map[int]float64 {
+	if tmap == nil {
+		return nil
+	}
+	before := map[int]float64{}
+	for i := range tmap.Tiles {
+		tile := &tmap.Tiles[i]
+		if tile.Device == nil || tile.Device.Kind != core.DeviceKindMiner || tile.Resource == core.ResourceNone {
+			continue
+		}
+		before[tile.ID] = tile.ResourceRemaining
+	}
+	return before
+}
+
+func (g *Game) collectFieldDataFromMining(tmap *core.TacticalMap, before map[int]float64) {
+	if tmap == nil || len(before) == 0 || !tmap.HasDevice(core.DeviceKindGate) {
+		return
+	}
+	if g.fieldDataScanCarry == nil {
+		g.fieldDataScanCarry = map[fieldDataTileKey]float64{}
+	}
+	for i := range tmap.Tiles {
+		tile := &tmap.Tiles[i]
+		prev, ok := before[tile.ID]
+		if !ok || tile.Resource == core.ResourceNone {
+			continue
+		}
+		mined := prev - tile.ResourceRemaining
+		if mined <= 0 {
+			continue
+		}
+		key := fieldDataTileKey{cellID: tmap.CellID, tileID: tile.ID}
+		g.fieldDataScanCarry[key] += mined
+		award := int(g.fieldDataScanCarry[key] / fieldDataUnitsPerSample)
+		if award <= 0 {
+			continue
+		}
+		g.fieldDataScanCarry[key] -= float64(award) * fieldDataUnitsPerSample
+		if tmap.Supply == nil {
+			tmap.Supply = map[core.ResourceType]int{}
+		}
+		tmap.Supply[core.ResourceFieldData] += award
+		if g.minedTotals == nil {
+			g.minedTotals = map[core.ResourceType]int{}
+		}
+		g.minedTotals[core.ResourceFieldData] += award
+		if tmap.CellID == g.tacticalID {
+			g.spawnFieldDataPopup(tmap, tile, award)
+		}
+	}
+}
+
+func (g *Game) spawnFieldDataPopup(tmap *core.TacticalMap, tile *core.TacticalTile, amount int) {
+	if tmap == nil || tile == nil || amount <= 0 {
+		return
+	}
+	cx, cy := g.tacticalCenter()
+	scale := g.tacticalTileScale()
+	x := cx + g.tacticalPanX + tile.Center.X*scale
+	y := cy + g.tacticalPanY + tile.Center.Y*scale - scale*0.16
+	g.fieldDataPopups = append(g.fieldDataPopups, fieldDataPopup{x: x, y: y, amount: amount, timer: 1.25})
+}
+
+func (g *Game) advanceFieldDataPopups(dt float64) {
+	if len(g.fieldDataPopups) == 0 {
+		return
+	}
+	out := g.fieldDataPopups[:0]
+	for _, popup := range g.fieldDataPopups {
+		popup.timer -= dt
+		if popup.timer > 0 {
+			out = append(out, popup)
+		}
+	}
+	g.fieldDataPopups = out
+}
+
+func (g *Game) drawFieldDataPopups(screen *ebiten.Image) {
+	for _, popup := range g.fieldDataPopups {
+		g.drawFieldDataPopup(screen, popup)
+	}
+}
+
+func (g *Game) drawFieldDataPopup(screen *ebiten.Image, popup fieldDataPopup) {
+	const duration = 1.25
+	progress := clampRange(1-popup.timer/duration, 0, 1)
+	fade := clampRange(popup.timer/0.48, 0, 1)
+	lift := 36 * progress
+	cx := popup.x
+	cy := popup.y - lift
+	ease := 1 - math.Pow(1-progress, 3)
+
+	for i := 0; i < 10; i++ {
+		angle := float64(i)/10*math.Pi*2 + g.animationTime*0.35
+		inner := 10.0
+		outer := 18 + 24*ease
+		points := []screenPoint{
+			{x: cx + math.Cos(angle-0.08)*inner, y: cy + math.Sin(angle-0.08)*inner},
+			{x: cx + math.Cos(angle+0.08)*inner, y: cy + math.Sin(angle+0.08)*inner},
+			{x: cx + math.Cos(angle+0.025)*outer, y: cy + math.Sin(angle+0.025)*outer},
+			{x: cx + math.Cos(angle-0.025)*outer, y: cy + math.Sin(angle-0.025)*outer},
+		}
+		drawScreenPolygon(screen, points, color.RGBA{76, 230, 190, uint8(74 * fade)})
+	}
+
+	size := 24.0 + 7*math.Sin(progress*math.Pi)
+	g.drawFloppyIcon(screen, cx, cy, size, fade)
+	label := fmt.Sprintf("+%d data", popup.amount)
+	g.drawTintedDebugTextBlock(screen, cx-26, cy+size*0.62, []string{label}, fade, 0.78, 1, 0.86)
+}
+
+func (g *Game) drawFloppyIcon(screen *ebiten.Image, cx, cy, size, alpha float64) {
+	a := uint8(245 * alpha)
+	x := cx - size*0.5
+	y := cy - size*0.5
+	drawRoundedRect(screen, float32(x+2), float32(y+3), float32(size), float32(size), 4, color.RGBA{0, 0, 0, uint8(90 * alpha)})
+	drawRoundedRect(screen, float32(x), float32(y), float32(size), float32(size), 4, color.RGBA{48, 220, 158, a})
+	drawRectOutline(screen, float32(x), float32(y), float32(size), float32(size), color.RGBA{212, 255, 230, a})
+	drawFilledRect(screen, float32(x+size*0.18), float32(y+size*0.12), float32(size*0.50), float32(size*0.24), color.RGBA{18, 54, 58, a})
+	drawFilledRect(screen, float32(x+size*0.56), float32(y+size*0.16), float32(size*0.10), float32(size*0.14), color.RGBA{232, 255, 236, a})
+	drawFilledRect(screen, float32(x+size*0.22), float32(y+size*0.58), float32(size*0.56), float32(size*0.22), color.RGBA{220, 246, 236, a})
 }
 
 func tacticalResourceSprite(resource core.ResourceType) *ebiten.Image {
@@ -2989,10 +3277,6 @@ func tacticalDeviceSignalColor(tile *core.TacticalTile) color.RGBA {
 func (g *Game) drawTacticalBackButton(screen *ebiten.Image) {
 	x, y, w, h := g.backButtonRect()
 	drawRoundedRect(screen, float32(x), float32(y), float32(w), float32(h), 10, color.RGBA{64, 80, 98, 236})
-	if g.depositBackCharge > 0 {
-		chargeW := w * clampRange(g.depositBackCharge, 0, 1)
-		drawRoundedRect(screen, float32(x), float32(y), float32(chargeW), float32(h), 10, color.RGBA{42, 184, 92, 170})
-	}
 	drawRectOutline(screen, float32(x), float32(y), float32(w), float32(h), color.RGBA{188, 214, 238, 255})
 	g.drawLeftArrow(screen, x+w*0.5, y+h*0.5, 12, color.RGBA{228, 236, 244, 255})
 }
@@ -3006,46 +3290,15 @@ func (g *Game) drawTacticalDepositButton(screen *ebiten.Image) {
 	label := "LOCKED"
 	if available {
 		label = "UPLINK"
-		fillAmount := clampRange(1-g.depositBackCharge, 0.18, 1)
-		fill = color.RGBA{30, uint8(96 + 88*fillAmount), 58, 236}
+		fill = color.RGBA{30, 184, 58, 236}
 		border = color.RGBA{118, 230, 154, 255}
 		text = color.RGBA{228, 246, 232, 255}
 	} else if g.gateUplinkUnlocked {
 		label = "UPLINK"
 	}
 	drawRoundedRect(screen, float32(x), float32(y), float32(w), float32(h), 10, fill)
-	if available {
-		fillW := w * clampRange(1-g.depositBackCharge, 0, 1)
-		drawRoundedRect(screen, float32(x), float32(y), float32(fillW), float32(h), 10, color.RGBA{50, 216, 108, 130})
-	}
-	g.drawDepositFlow(screen)
 	drawRectOutline(screen, float32(x), float32(y), float32(w), float32(h), border)
 	g.drawTintedDebugTextBlock(screen, x+14, y+12, []string{label}, 1, float32(text.R)/255, float32(text.G)/255, float32(text.B)/255)
-}
-
-func (g *Game) drawDepositFlow(screen *ebiten.Image) {
-	if g.depositBackCharge <= 0 && g.depositPumpTimer <= 0 {
-		return
-	}
-	bx, by, bw, bh := g.backButtonRect()
-	dx, _, _, _ := g.depositButtonRect()
-	y := by + bh*0.5 - 2
-	left := bx + bw + 4
-	right := dx - 4
-	if right <= left {
-		return
-	}
-	alpha := uint8(80 + 120*clampRange(g.depositBackCharge, 0, 1))
-	drawFilledRect(screen, float32(left), float32(y), float32(right-left), 4, color.RGBA{54, 214, 110, alpha})
-	if g.depositPumpTimer > 0 {
-		t := 1 - clampRange(g.depositPumpTimer/0.34, 0, 1)
-		px := right - (right-left)*t
-		drawDisc(screen, float32(px), float32(y+2), 5, color.RGBA{126, 255, 166, 235})
-		return
-	}
-	t := 1 - clampRange(g.depositBackCharge, 0, 1)
-	px := left + (right-left)*t
-	drawDisc(screen, float32(px), float32(y+2), 4, color.RGBA{126, 255, 166, 190})
 }
 
 func (g *Game) drawArrowBackButton(screen *ebiten.Image) {
@@ -3070,7 +3323,7 @@ func (g *Game) drawTacticalBuildButton(screen *ebiten.Image) {
 	x, y, w, h := g.buildButtonRect()
 	drawRoundedRect(screen, float32(x), float32(y), float32(w), float32(h), 10, color.RGBA{64, 80, 98, 236})
 	drawRectOutline(screen, float32(x), float32(y), float32(w), float32(h), color.RGBA{188, 214, 238, 255})
-	ebitenutil.DebugPrintAt(screen, "BUILD", int(x)+22, int(y)+12)
+	ebitenutil.DebugPrintAt(screen, "FAB", int(x)+32, int(y)+12)
 }
 
 func (g *Game) drawPendingBuildCard(screen *ebiten.Image) {
@@ -3102,14 +3355,14 @@ func (g *Game) drawTacticalDisassembleButton(screen *ebiten.Image) {
 	x, y, w, h := g.disassembleButtonRect()
 	drawRoundedRect(screen, float32(x), float32(y), float32(w), float32(h), 10, color.RGBA{112, 56, 52, 236})
 	drawRectOutline(screen, float32(x), float32(y), float32(w), float32(h), color.RGBA{236, 170, 160, 255})
-	label := "DISASSEMBLE"
-	labelX := int(x) + 7
+	label := "SALVAGE"
+	labelX := int(x) + 22
 	if tile.Device.SpecialStarter {
-		label = "PICK UP"
-		labelX = int(x) + 28
+		label = "RECOVER"
+		labelX = int(x) + 22
 	} else if tile.Device.Kind == core.DeviceKindSmelter {
-		label = "CONFIG"
-		labelX = int(x) + 20
+		label = "TUNE"
+		labelX = int(x) + 34
 	}
 	ebitenutil.DebugPrintAt(screen, label, labelX, int(y)+12)
 }
@@ -3119,7 +3372,7 @@ func (g *Game) drawTacticalPlaceBuildButton(screen *ebiten.Image) {
 		x, y, w, h := g.disassembleButtonRect()
 		drawRoundedRect(screen, float32(x), float32(y), float32(w), float32(h), 10, color.RGBA{92, 70, 42, 236})
 		drawRectOutline(screen, float32(x), float32(y), float32(w), float32(h), color.RGBA{236, 206, 150, 255})
-		ebitenutil.DebugPrintAt(screen, "CANCEL", int(x)+20, int(y)+12)
+		ebitenutil.DebugPrintAt(screen, "ABORT", int(x)+28, int(y)+12)
 	}
 }
 
@@ -3951,18 +4204,28 @@ func itoa(v int) string {
 	return sign + string(buf)
 }
 
-// visibleInventoryResources is the fixed set always shown on the compact
-// inventory card. Anything else lives behind the ... button.
-var visibleInventoryResources = []core.ResourceType{
+// compactInventoryResources are the fixed resources always shown on the
+// compact inventory card. Tactical keeps this to local supply basics; strategic
+// also surfaces Field Data because it gates tech progression.
+var compactInventoryResources = []core.ResourceType{
 	core.ResourceStone,
 	core.ResourceIronOre,
 	core.ResourceCopperOre,
 	core.ResourceCoal,
 }
 
+var strategicCompactInventoryResources = append(append([]core.ResourceType{}, compactInventoryResources...), core.ResourceFieldData)
+
+func (g *Game) visibleInventoryResources() []core.ResourceType {
+	if g.mode == modeStrategic {
+		return strategicCompactInventoryResources
+	}
+	return compactInventoryResources
+}
+
 func (g *Game) inventoryCardLines() []string {
 	lines := []string{"INVENTORY"}
-	for _, resource := range visibleInventoryResources {
+	for _, resource := range g.visibleInventoryResources() {
 		lines = append(lines, fmt.Sprintf("%s %d", resourceShortLabel(resource), g.inventory[resource]))
 	}
 	return lines
@@ -4000,7 +4263,7 @@ func (g *Game) inventoryCardSize() (float64, float64) {
 // in the visible card — drives whether the ... button shows.
 func (g *Game) inventoryHasOverflow() bool {
 	visible := map[core.ResourceType]bool{}
-	for _, r := range visibleInventoryResources {
+	for _, r := range g.visibleInventoryResources() {
 		visible[r] = true
 	}
 	_, inventory := g.inventoryDisplaySource()
@@ -4031,7 +4294,7 @@ func (g *Game) drawInventoryCard(screen *ebiten.Image, x, y, alpha float64) {
 	drawRectOutline(screen, float32(x), float32(y), float32(w), float32(h), color.RGBA{126, 176, 210, uint8(210 * alpha)})
 	g.drawAlphaDebugTextBlock(screen, x+12, y+12, []string{title}, alpha)
 	rowY := y + 28
-	for _, resource := range visibleInventoryResources {
+	for _, resource := range g.visibleInventoryResources() {
 		textX := int(x) + 30
 		if resourceHasMapIcon(resource) {
 			g.drawInventoryResourceIcon(screen, x+18, rowY+7, resource)
@@ -4183,16 +4446,23 @@ func (g *Game) drawTechList(screen *ebiten.Image) {
 		return
 	}
 	x := 22.0
-	y := 112.0
+	ry := 112.0
 	w := float64(g.screenWidth) - 44
-	h := 74.0
-	for i, recipe := range recipes {
-		ry := y + float64(i)*82
+	for _, recipe := range recipes {
+		h := g.techRecipeCardHeight(recipe.ID)
 		if ry+h > float64(g.screenHeight)-80 {
 			break
 		}
 		g.drawTechRecipeCard(screen, x, ry, w, h, recipe)
+		ry += h + 8
 	}
+}
+
+func (g *Game) techRecipeCardHeight(recipeID string) float64 {
+	if g.expandedTechRecipeID != recipeID {
+		return 74
+	}
+	return 74 + float64(len(g.techIngredientLines(recipeID)))*16 + 10
 }
 
 func (g *Game) drawTechRecipeCard(screen *ebiten.Image, x, y, w, h float64, recipe core.RecipeDef) {
@@ -4200,7 +4470,7 @@ func (g *Game) drawTechRecipeCard(screen *ebiten.Image, x, y, w, h float64, reci
 	affordable := g.canUnlockRecipe(recipe.ID)
 	fill := color.RGBA{52, 44, 34, 230}
 	border := color.RGBA{188, 150, 94, 255}
-	status := "LOCKED"
+	status := "NEED"
 	if known {
 		fill = color.RGBA{24, 40, 30, 230}
 		border = color.RGBA{116, 198, 140, 255}
@@ -4222,6 +4492,9 @@ func (g *Game) drawTechRecipeCard(screen *ebiten.Image, x, y, w, h float64, reci
 	if !known && !affordable {
 		lineY := y + 28
 		drawFilledRect(screen, float32(x+w-sw-7), float32(lineY), float32(sw-10), 2, color.RGBA{236, 190, 150, 255})
+	}
+	if g.expandedTechRecipeID == recipe.ID && !known && !affordable {
+		g.drawTintedDebugTextBlock(screen, x+12, y+74, g.techIngredientLines(recipe.ID), 1, 1, 0.86, 0.68)
 	}
 }
 
@@ -4260,16 +4533,23 @@ func (g *Game) drawBuildList(screen *ebiten.Image) {
 		return
 	}
 	x := 22.0
-	y := 112.0
+	ry := 112.0
 	w := float64(g.screenWidth) - 44
-	h := 74.0
-	for i, recipeID := range ids {
-		ry := y + float64(i)*82
+	for _, recipeID := range ids {
+		h := g.buildRecipeCardHeight(recipeID)
 		if ry+h > float64(g.screenHeight)-80 {
 			break
 		}
 		g.drawBuildRecipeCard(screen, x, ry, w, h, recipeID)
+		ry += h + 8
 	}
+}
+
+func (g *Game) buildRecipeCardHeight(recipeID string) float64 {
+	if g.expandedBuildRecipeID != recipeID {
+		return 74
+	}
+	return 74 + float64(len(g.buildIngredientLines(recipeID)))*16 + 10
 }
 
 func (g *Game) drawBuildRecipeCard(screen *ebiten.Image, x, y, w, h float64, recipeID string) {
@@ -4278,11 +4558,11 @@ func (g *Game) drawBuildRecipeCard(screen *ebiten.Image, x, y, w, h float64, rec
 	affordable := g.canAffordRecipe(recipeID)
 	fill := color.RGBA{72, 34, 38, 230}
 	border := color.RGBA{216, 108, 118, 255}
-	status := "$"
+	status := "NEED"
 	if affordable {
 		fill = color.RGBA{28, 72, 46, 230}
 		border = color.RGBA{128, 226, 160, 255}
-		status = "BUILD"
+		status = "FAB"
 	}
 	sw := float64(len(status))*7 + 18
 	costLines := wrapDebugText(costText, int((w-24-sw-12)/7), 2)
@@ -4295,6 +4575,9 @@ func (g *Game) drawBuildRecipeCard(screen *ebiten.Image, x, y, w, h float64, rec
 	if !affordable {
 		lineY := y + 28
 		drawFilledRect(screen, float32(x+w-sw-7), float32(lineY), float32(sw-10), 2, color.RGBA{236, 170, 170, 255})
+	}
+	if g.expandedBuildRecipeID == recipeID && !affordable {
+		g.drawTintedDebugTextBlock(screen, x+12, y+74, g.buildIngredientLines(recipeID), 1, 1, 0.78, 0.78)
 	}
 }
 
@@ -4383,15 +4666,16 @@ func (g *Game) pickTechRecipe(x, y int) (string, bool) {
 	cardX := 22.0
 	cardY := 112.0
 	cardW := float64(g.screenWidth) - 44
-	cardH := 74.0
-	for i, recipe := range recipes {
-		ry := cardY + float64(i)*82
+	for _, recipe := range recipes {
+		cardH := g.techRecipeCardHeight(recipe.ID)
+		ry := cardY
 		if ry+cardH > float64(g.screenHeight)-80 {
 			break
 		}
 		if g.pointInRect(float64(x), float64(y), cardX, ry, cardW, cardH) {
 			return recipe.ID, true
 		}
+		cardY += cardH + 8
 	}
 	return "", false
 }
@@ -4401,15 +4685,16 @@ func (g *Game) pickBuildRecipe(x, y int) (string, bool) {
 	cardX := 22.0
 	cardY := 112.0
 	cardW := float64(g.screenWidth) - 44
-	cardH := 74.0
-	for i, recipeID := range ids {
-		ry := cardY + float64(i)*82
+	for _, recipeID := range ids {
+		cardH := g.buildRecipeCardHeight(recipeID)
+		ry := cardY
 		if ry+cardH > float64(g.screenHeight)-80 {
 			break
 		}
 		if g.pointInRect(float64(x), float64(y), cardX, ry, cardW, cardH) {
 			return recipeID, true
 		}
+		cardY += cardH + 8
 	}
 	return "", false
 }
@@ -4529,6 +4814,10 @@ func (g *Game) techCostText(recipeID string) string {
 	return "global " + strings.Join(parts, ", ")
 }
 
+func (g *Game) techIngredientLines(recipeID string) []string {
+	return ingredientProgressLines("GLOBAL INGREDIENTS", g.techCost(recipeID), g.inventory)
+}
+
 func (g *Game) canAffordRecipe(recipeID string) bool {
 	if recipeID == starterMinerRecipeID {
 		return g.starterMinerCount > 0 && g.currentRegionHasGate()
@@ -4542,6 +4831,22 @@ func (g *Game) canAffordRecipe(recipeID string) bool {
 	}
 	_, ok := g.buildPlanForRecipe(recipeID)
 	return ok
+}
+
+func (g *Game) buildIngredientLines(recipeID string) []string {
+	switch recipeID {
+	case starterMinerRecipeID:
+		if !g.currentRegionHasGate() {
+			return []string{"REQUIREMENTS", "local GATE 0/1"}
+		}
+		return []string{"REQUIREMENTS", "MUG unit ready"}
+	case starterGateRecipeID:
+		if tmap := g.currentTacticalMap(); tmap != nil && tmap.HasDevice(core.DeviceKindGate) {
+			return []string{"REQUIREMENTS", "one GATE per region"}
+		}
+		return []string{"REQUIREMENTS", "GATE unit ready"}
+	}
+	return ingredientProgressLines("LOCAL INGREDIENTS", g.recipes.RawCost(recipeID), g.buildResourceInventory())
 }
 
 func (g *Game) recipeCostText(recipeID string) string {
@@ -4565,6 +4870,35 @@ func (g *Game) recipeCostText(recipeID string) string {
 		return g.recipeRequirementText(recipeID)
 	}
 	return buildPlanSummary(plan)
+}
+
+func ingredientProgressLines(title string, cost, have map[core.ResourceType]int) []string {
+	lines := []string{title}
+	if len(cost) == 0 {
+		return append(lines, "none")
+	}
+	resources := make([]core.ResourceType, 0, len(cost))
+	for resource, needed := range cost {
+		if needed > 0 {
+			resources = append(resources, resource)
+		}
+	}
+	sort.Slice(resources, func(i, j int) bool {
+		return resourceLabel(resources[i]) < resourceLabel(resources[j])
+	})
+	for _, resource := range resources {
+		needed := cost[resource]
+		current := 0
+		if have != nil {
+			current = have[resource]
+		}
+		status := "ok"
+		if current < needed {
+			status = fmt.Sprintf("need %d", needed-current)
+		}
+		lines = append(lines, fmt.Sprintf("%s %d/%d %s", resourceLabel(resource), current, needed, status))
+	}
+	return lines
 }
 
 func (g *Game) recipeRequirementText(recipeID string) string {
@@ -5259,6 +5593,15 @@ func (g *Game) handleTechTap(x, y int) {
 	if !ok {
 		return
 	}
+	if !g.canUnlockRecipe(recipeID) {
+		if g.expandedTechRecipeID == recipeID {
+			g.expandedTechRecipeID = ""
+			return
+		}
+		g.expandedTechRecipeID = recipeID
+		return
+	}
+	g.expandedTechRecipeID = ""
 	g.unlockRecipeWithGlobalSupply(recipeID)
 }
 
@@ -5281,15 +5624,25 @@ func (g *Game) handleBuildTap(x, y int) {
 		return
 	}
 	recipeID, ok := g.pickBuildRecipe(x, y)
-	if !ok || !g.canAffordRecipe(recipeID) {
+	if !ok {
 		return
 	}
+	if !g.canAffordRecipe(recipeID) {
+		if g.expandedBuildRecipeID == recipeID {
+			g.expandedBuildRecipeID = ""
+			return
+		}
+		g.expandedBuildRecipeID = recipeID
+		return
+	}
+	g.expandedBuildRecipeID = ""
 	g.pendingBuildRecipeID = recipeID
 	g.mode = modeTactical
 }
 
 func (g *Game) disassembleButtonRect() (float64, float64, float64, float64) {
-	return float64(g.screenWidth - 110), float64(g.screenHeight - 108), 94, 38
+	buildX, buildY, _, buildH := g.buildButtonRect()
+	return buildX - 104, buildY, 94, buildH
 }
 
 func (g *Game) settingsButtonRect() (float64, float64, float64, float64) {
