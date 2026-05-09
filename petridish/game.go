@@ -48,7 +48,67 @@ const (
 	tacticalMinZoom     = 0.55
 	tacticalMaxZoom     = 2.4
 	statsZoomStart      = 1.2
+	dishCellOverlap     = 1.012
+	dishGridFit         = 8.25
+	dishTickSeconds     = 0.18
+	dishMoveAnimSeconds = 0.16
+	dishDefaultTime     = 1.0
+	dishMaxTime         = 3.0
 )
+
+const (
+	dishEmpty = iota
+	dishLife
+	dishZombie
+	dishSick
+	dishDead
+	dishWall
+)
+
+const (
+	dishSickDuration     = 10
+	dishResurrectionTime = 16
+	dishZombieBoostTicks = 7
+	dishLifeMoveDelay    = 1
+	dishZombieMoveDelay  = 2
+	dishPokedInfluence   = 8
+	dishInitialMoveDelay = 2
+	dishLifeVision       = 4
+	dishZombieVision     = 6
+	dishPanicDistance    = 2
+)
+
+const (
+	runBoardRadius       = 3
+	runTeamNone          = -1
+	runTeamBlue          = 0
+	runTeamRed           = 1
+	runBaseMaxHP         = 8
+	runStartingBroth     = 2
+	runSecondPlayerBonus = 1
+	runBaseIncome        = 1
+	runWhiteCellCost     = 1
+	runWhiteCellHP       = 3
+	runWhiteCellAttack   = 1
+	runWhiteCellMove     = 1
+	runWhiteCellAP       = 2
+	runSpawnAP           = 1
+	runUnitLimit         = 5
+	runWallDropDamage    = 1
+	runWallDropFXSeconds = 0.86
+	runMoveAnimSeconds   = 0.18
+	runAITurnDelay       = 0.52
+	runAIScoreInfinity   = 1 << 30
+)
+
+var dishNeighborOffsets = [][2]int{
+	{1, 0},
+	{1, -1},
+	{0, -1},
+	{-1, 0},
+	{-1, 1},
+	{0, 1},
+}
 
 type viewMode int
 
@@ -104,10 +164,29 @@ type Game struct {
 	currentStageID        string
 	dishTileID            int
 	dishCells             []dishCell
+	dishTickCarry         float64
+	dishGeneration        int
+	dishTimeScale         float64
+	dishSliderDown        bool
+	dishSliderTouch       ebiten.TouchID
 	roster                []rosterUnit
 	selectedRosterUnit    int
 	runTileID             int
 	runTurn               int
+	runActiveTeam         int
+	runBroth              [2]int
+	runBaseHP             [2]int
+	runUnits              []runUnit
+	runWells              []runWell
+	runWalls              []runWall
+	runWallDropFX         []runWallDropFX
+	runNextUnitID         int
+	runSelectedUnitID     int
+	runSpawnMode          bool
+	runMessage            string
+	runBuyPending         bool
+	runBoughtThisTurn     [2]bool
+	runAITimer            float64
 	settingsDown          bool
 	settingsX             int
 	settingsY             int
@@ -182,6 +261,11 @@ type dishCell struct {
 	Center    core.Vec3
 	Kind      int
 	Influence int
+	Timer     int
+	Boost     int
+	MoveDelay int
+	AnimFrom  core.Vec3
+	AnimT     float64
 	Phase     float64
 }
 
@@ -192,6 +276,41 @@ type rosterUnit struct {
 	HP    int
 	Move  int
 	Fill  color.RGBA
+}
+
+type runUnit struct {
+	ID       int
+	Team     int
+	Kind     int
+	Q        int
+	R        int
+	HP       int
+	MaxHP    int
+	Attack   int
+	Actions  int
+	Phase    float64
+	AnimFrom core.Vec3
+	AnimT    float64
+}
+
+type runWell struct {
+	Q     int
+	R     int
+	Owner int
+}
+
+type runWall struct {
+	Q int
+	R int
+}
+
+type runWallDropFX struct {
+	Q      int
+	R      int
+	Team   int
+	Hit    bool
+	Lethal bool
+	Age    float64
 }
 
 type mugMoveState struct {
@@ -314,10 +433,15 @@ func NewGame() *Game {
 		lastTapCellID:         -1,
 		lastTapTacticalTileID: -1,
 		dishTileID:            -1,
+		dishTimeScale:         dishDefaultTime,
+		dishSliderTouch:       -1,
 		roster:                defaultRosterUnits(),
 		selectedRosterUnit:    0,
 		runTileID:             -1,
 		runTurn:               1,
+		runActiveTeam:         runTeamBlue,
+		runBaseHP:             [2]int{runBaseMaxHP, runBaseMaxHP},
+		runSelectedUnitID:     -1,
 		configTileID:          -1,
 		mugMoves:              map[int]*mugMoveState{},
 		fieldDataScanCarry:    map[fieldDataTileKey]float64{},
@@ -340,8 +464,27 @@ func (g *Game) installFreshWorld(seed int64) {
 	g.tacticalTile = -1
 	g.dishTileID = -1
 	g.dishCells = nil
+	g.dishTickCarry = 0
+	g.dishGeneration = 0
+	g.dishTimeScale = dishDefaultTime
+	g.dishSliderDown = false
+	g.dishSliderTouch = -1
 	g.runTileID = -1
 	g.runTurn = 1
+	g.runActiveTeam = runTeamBlue
+	g.runBroth = [2]int{runStartingBroth, runStartingBroth}
+	g.runBaseHP = [2]int{runBaseMaxHP, runBaseMaxHP}
+	g.runUnits = nil
+	g.runWells = nil
+	g.runWalls = nil
+	g.runWallDropFX = nil
+	g.runNextUnitID = 1
+	g.runSelectedUnitID = -1
+	g.runSpawnMode = false
+	g.runMessage = ""
+	g.runBuyPending = false
+	g.runBoughtThisTurn = [2]bool{}
+	g.runAITimer = 0
 	g.tacticalZoom = 1
 	g.tacticalPanX = 0
 	g.tacticalPanY = 0
@@ -972,11 +1115,16 @@ func (g *Game) Update() error {
 	}
 	if g.mode == modeDish {
 		g.handleDishInput()
+		g.advanceDishCellAnimations(dt)
+		g.advanceDishAutomaton(dt)
 		g.ruleset.Update(g.globe, dt)
 		return nil
 	}
 	if g.mode == modeRun {
 		g.handleRunInput()
+		g.advanceRunUnitAnimations(dt)
+		g.advanceRunWallDropFX(dt)
+		g.advanceRunAutoBattle(dt)
 		g.ruleset.Update(g.globe, dt)
 		return nil
 	}
@@ -1197,13 +1345,45 @@ func (g *Game) handleTacticalInput() {
 }
 
 func (g *Game) handleDishInput() {
+	if g.dishSliderDown && g.dishSliderTouch == -1 && ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft) {
+		x, _ := ebiten.CursorPosition()
+		g.setDishTimeFromSliderX(float64(x))
+		return
+	}
+	if inpututil.IsMouseButtonJustReleased(ebiten.MouseButtonLeft) && g.dishSliderDown && g.dishSliderTouch == -1 {
+		g.dishSliderDown = false
+		return
+	}
 	if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) {
 		x, y := ebiten.CursorPosition()
+		if g.beginDishSliderIfHit(x, y, -1) {
+			return
+		}
 		g.handleDishTap(x, y)
+	}
+	if g.dishSliderDown && g.dishSliderTouch != -1 {
+		active := false
+		for _, id := range ebiten.AppendTouchIDs(nil) {
+			if id == g.dishSliderTouch {
+				active = true
+				x, _ := ebiten.TouchPosition(id)
+				g.setDishTimeFromSliderX(float64(x))
+				break
+			}
+		}
+		if !active {
+			g.dishSliderDown = false
+			g.dishSliderTouch = -1
+		}
+		return
 	}
 	justTouched := inpututil.AppendJustPressedTouchIDs(nil)
 	if len(justTouched) > 0 {
-		x, y := ebiten.TouchPosition(justTouched[0])
+		id := justTouched[0]
+		x, y := ebiten.TouchPosition(id)
+		if g.beginDishSliderIfHit(x, y, id) {
+			return
+		}
 		g.handleDishTap(x, y)
 	}
 }
@@ -1217,7 +1397,17 @@ func (g *Game) handleDishTap(x, y int) {
 	if id, ok := g.pickDishCell(x, y); ok {
 		for i := range g.dishCells {
 			if g.dishCells[i].ID == id {
-				g.dishCells[i].Influence = (g.dishCells[i].Influence + 1) % 4
+				if g.dishRunning() {
+					g.dishCells[i].Influence = dishPokedInfluence
+					return
+				}
+				g.dishCells[i].Kind = nextDishTapKind(g.dishCells[i].Kind)
+				g.dishCells[i].Influence = dishPokedInfluence
+				g.dishCells[i].Timer = 0
+				g.dishCells[i].Boost = 0
+				g.dishCells[i].MoveDelay = 0
+				g.dishCells[i].AnimFrom = g.dishCells[i].Center
+				g.dishCells[i].AnimT = 1
 				return
 			}
 		}
@@ -1242,14 +1432,1054 @@ func (g *Game) handleRunTap(x, y int) {
 		g.mode = modeTactical
 		return
 	}
-	endX, endY, endW, endH := g.endTurnButtonRect()
-	if g.pointInRect(float64(x), float64(y), endX, endY, endW, endH) {
-		g.runTurn++
+	if g.runBuyPending {
+		if g.finishRunBuyIfUnavailable("") {
+			return
+		}
+		skipX, skipY, skipW, skipH := g.endTurnButtonRect()
+		if g.runSkipAvailable() && g.pointInRect(float64(x), float64(y), skipX, skipY, skipW, skipH) {
+			g.skipRunBuy()
+			return
+		}
+		skipX, skipY, skipW, skipH = g.runSkipCardRect()
+		if g.runSkipAvailable() && g.pointInRect(float64(x), float64(y), skipX, skipY, skipW, skipH) {
+			g.skipRunBuy()
+			return
+		}
+		if unitID, ok := g.pickRunRosterUnit(x, y); ok {
+			g.buyRunRosterUnit(unitID)
+			return
+		}
+		g.runMessage = g.runBuyChoiceMessage("")
 		return
 	}
-	if unitID, ok := g.pickRunRosterUnit(x, y); ok {
-		g.selectedRosterUnit = unitID
+	g.runMessage = "auto battle is running"
+}
+
+func (g *Game) runSkipAvailable() bool {
+	return g.runActiveTeam == runTeamBlue && g.runBuyPending && g.runCanBuy(runTeamBlue)
+}
+
+func (g *Game) beginRunSpawn() {
+	if len(g.roster) == 0 {
+		g.roster = defaultRosterUnits()
 	}
+	cost := runWhiteCellCost
+	if g.runBroth[g.runActiveTeam] < cost {
+		g.runMessage = fmt.Sprintf("%s needs %d ooze", runTeamLabel(g.runActiveTeam), cost)
+		return
+	}
+	if g.runTeamUnitCount(g.runActiveTeam) >= runUnitLimit {
+		g.runMessage = fmt.Sprintf("%s unit limit reached", runTeamLabel(g.runActiveTeam))
+		return
+	}
+	g.runSpawnMode = true
+	g.runSelectedUnitID = -1
+	g.runMessage = "tap your nest or a glowing spawn tile"
+}
+
+func (g *Game) buyRunRosterUnit(unitID int) bool {
+	if unitID < 0 || unitID >= len(g.roster) {
+		return false
+	}
+	if g.runActiveTeam != runTeamBlue || !g.runBuyPending {
+		g.runMessage = "auto battle is running"
+		return false
+	}
+	if g.finishRunBuyIfUnavailable("") {
+		return false
+	}
+	q, r, ok := g.runBestSpawnTile(runTeamBlue)
+	if !ok {
+		g.finishRunBuyPhase(g.runBuyUnavailableMessage("no open nest tile"))
+		return false
+	}
+	g.selectedRosterUnit = unitID
+	g.runSpawnMode = true
+	if !g.spawnRunWhiteCell(q, r) {
+		g.runSpawnMode = false
+		return false
+	}
+	boughtUnitID := g.runSelectedUnitID
+	moved := g.runAutoTryMoveUnit(boughtUnitID)
+	g.runSelectedUnitID = -1
+	g.runBuyPending = true
+	g.runSpawnMode = g.runCanBuy(runTeamBlue)
+	boughtLine := fmt.Sprintf("Blue bought %s", runUnitName(dishLife))
+	if moved {
+		boughtLine += " and advanced"
+	}
+	if g.runBroth[runTeamBlue] <= 0 {
+		g.finishRunBuyPhase(boughtLine + "; ooze spent")
+		return true
+	}
+	if !g.runCanBuy(runTeamBlue) {
+		g.finishRunBuyPhase(g.runBuyUnavailableMessage(boughtLine))
+		return true
+	}
+	g.runMessage = g.runBuyChoiceMessage(boughtLine)
+	return true
+}
+
+func (g *Game) runBuyChoiceMessage(lead string) string {
+	prompt := "choose a unit or skip"
+	if g.runBroth[runTeamBlue] <= 0 {
+		prompt = "out of ooze"
+	} else if !g.runCanBuy(runTeamBlue) {
+		prompt = "cannot place"
+	}
+	if lead == "" {
+		return prompt
+	}
+	return lead + "; " + prompt
+}
+
+func (g *Game) finishRunBuyIfUnavailable(lead string) bool {
+	if g.runActiveTeam != runTeamBlue || !g.runBuyPending || g.runCanBuy(runTeamBlue) {
+		return false
+	}
+	g.finishRunBuyPhase(g.runBuyUnavailableMessage(lead))
+	return true
+}
+
+func (g *Game) runBuyUnavailableMessage(lead string) string {
+	reason := "Blue cannot place"
+	switch {
+	case g.runBroth[runTeamBlue] <= 0:
+		reason = "Blue is out of ooze"
+	case g.runTeamUnitCount(runTeamBlue) >= runUnitLimit:
+		reason = "Blue unit limit reached"
+	default:
+		reason = "Blue has no open nest tile"
+	}
+	if lead == "" {
+		return reason
+	}
+	return lead + "; " + reason
+}
+
+func (g *Game) finishRunBuyPhase(message string) {
+	g.runBuyPending = false
+	g.runBoughtThisTurn[runTeamBlue] = true
+	g.runSpawnMode = false
+	g.runSelectedUnitID = -1
+	g.runAITimer = runAITurnDelay
+	g.runMessage = message
+}
+
+func (g *Game) skipRunBuy() {
+	if g.runActiveTeam != runTeamBlue || !g.runBuyPending {
+		return
+	}
+	if g.finishRunBuyIfUnavailable("") {
+		return
+	}
+	wallResult := g.dropRunSkipWall(runTeamBlue)
+	message := "Blue saves ooze"
+	if wallResult != "" {
+		message += "; " + wallResult
+	}
+	g.finishRunBuyPhase(message)
+}
+
+func (g *Game) dropRunSkipWall(team int) string {
+	q, r, ok := g.pickRunWallDropTile(team)
+	if !ok {
+		return ""
+	}
+	if unitIndex, occupied := g.runUnitAt(q, r); occupied {
+		unit := &g.runUnits[unitIndex]
+		unit.HP -= runWallDropDamage
+		unitTeam := unit.Team
+		unitName := runUnitName(unit.Kind)
+		if unit.HP > 0 {
+			g.addRunWallDropFX(q, r, unitTeam, true, false)
+			return fmt.Sprintf("wall bruised %s %s", runTeamLabel(unitTeam), unitName)
+		}
+		deadID := unit.ID
+		g.runUnits = append(g.runUnits[:unitIndex], g.runUnits[unitIndex+1:]...)
+		if g.runSelectedUnitID == deadID {
+			g.runSelectedUnitID = -1
+		}
+		g.placeRunWall(q, r)
+		g.addRunWallDropFX(q, r, unitTeam, true, true)
+		return fmt.Sprintf("wall crushed %s %s", runTeamLabel(unitTeam), unitName)
+	}
+	g.placeRunWall(q, r)
+	g.addRunWallDropFX(q, r, runTeamNone, false, false)
+	if _, blockedWell := g.runWellAt(q, r); blockedWell {
+		return "wall blocked an ooze well"
+	}
+	return fmt.Sprintf("wall grew near %s", runTeamLabel(opposingRunTeam(team)))
+}
+
+func (g *Game) addRunWallDropFX(q, r, team int, hit, lethal bool) {
+	g.runWallDropFX = append(g.runWallDropFX, runWallDropFX{
+		Q:      q,
+		R:      r,
+		Team:   team,
+		Hit:    hit,
+		Lethal: lethal,
+	})
+}
+
+func (g *Game) pickRunWallDropTile(team int) (int, int, bool) {
+	bestQ, bestR := 0, 0
+	bestScore := runAIScoreInfinity
+	found := false
+	for q := -runBoardRadius; q <= runBoardRadius; q++ {
+		rMin := maxIntLocal(-runBoardRadius, -q-runBoardRadius)
+		rMax := minIntLocal(runBoardRadius, -q+runBoardRadius)
+		for r := rMin; r <= rMax; r++ {
+			if !g.canDropRunWallAt(q, r) {
+				continue
+			}
+			score := g.runWallDropScore(q, r, team)
+			if g.perkRand != nil {
+				score += g.perkRand.Intn(12)
+			} else {
+				score += absInt(q*17+r*29) % 12
+			}
+			if !found || score < bestScore {
+				found = true
+				bestScore = score
+				bestQ = q
+				bestR = r
+			}
+		}
+	}
+	return bestQ, bestR, found
+}
+
+func (g *Game) canDropRunWallAt(q, r int) bool {
+	if !runTileExists(q, r) || g.isRunBase(q, r, runTeamBlue) || g.isRunBase(q, r, runTeamRed) {
+		return false
+	}
+	_, blocked := g.runWallAt(q, r)
+	return !blocked
+}
+
+func (g *Game) runWallDropScore(q, r, team int) int {
+	enemyTeam := opposingRunTeam(team)
+	score := 0
+	nearestEnemy := runAIScoreInfinity
+	nearestAlly := runAIScoreInfinity
+	for _, unit := range g.runUnits {
+		dist := runAxialDistance(q, r, unit.Q, unit.R)
+		if unit.Team == enemyTeam {
+			nearestEnemy = minIntLocal(nearestEnemy, dist)
+			continue
+		}
+		if unit.Team == team {
+			nearestAlly = minIntLocal(nearestAlly, dist)
+		}
+	}
+	if nearestEnemy < runAIScoreInfinity {
+		score += nearestEnemy * 82
+	} else {
+		baseQ, baseR := runBaseCoord(enemyTeam)
+		score += runAxialDistance(q, r, baseQ, baseR) * 45
+	}
+	if nearestAlly <= 1 {
+		score += (2 - nearestAlly) * 70
+	}
+	if unitIndex, occupied := g.runUnitAt(q, r); occupied {
+		if g.runUnits[unitIndex].Team == enemyTeam {
+			score -= 170
+		} else {
+			score += 230
+		}
+	}
+	if wellIndex, ok := g.runWellAt(q, r); ok {
+		switch g.runWells[wellIndex].Owner {
+		case enemyTeam:
+			score -= 36
+		case runTeamNone:
+			score -= 16
+		case team:
+			score += 24
+		}
+	}
+	return score
+}
+
+func (g *Game) placeRunWall(q, r int) {
+	if _, exists := g.runWallAt(q, r); exists {
+		return
+	}
+	g.runWalls = append(g.runWalls, runWall{Q: q, R: r})
+}
+
+func (g *Game) handleRunTileTap(q, r int) {
+	if g.runBaseHP[runTeamBlue] <= 0 || g.runBaseHP[runTeamRed] <= 0 {
+		return
+	}
+	if g.runSpawnMode {
+		if g.spawnRunWhiteCell(q, r) {
+			return
+		}
+		g.runMessage = "spawn at your nest or adjacent empty tile"
+		return
+	}
+	if g.isRunBase(q, r, g.runActiveTeam) {
+		g.beginRunSpawn()
+		return
+	}
+	if unitIndex, ok := g.runUnitAt(q, r); ok {
+		unit := &g.runUnits[unitIndex]
+		if unit.Team == g.runActiveTeam {
+			g.runSelectedUnitID = unit.ID
+			g.runMessage = fmt.Sprintf("%s selected", runUnitName(unit.Kind))
+			return
+		}
+		g.tryRunAttackUnit(unitIndex)
+		return
+	}
+	if enemyTeam := opposingRunTeam(g.runActiveTeam); g.isRunBase(q, r, enemyTeam) {
+		g.tryRunAttackBase(enemyTeam)
+		return
+	}
+	g.tryRunMove(q, r)
+}
+
+func (g *Game) spawnRunWhiteCell(q, r int) bool {
+	if !g.runSpawnMode || g.runBroth[g.runActiveTeam] < runWhiteCellCost {
+		return false
+	}
+	if !g.isRunSpawnTile(q, r, g.runActiveTeam) {
+		return false
+	}
+	if _, occupied := g.runUnitAt(q, r); occupied {
+		return false
+	}
+	if _, blocked := g.runWallAt(q, r); blocked {
+		return false
+	}
+	g.runBroth[g.runActiveTeam] -= runWhiteCellCost
+	g.runUnits = append(g.runUnits, runUnit{
+		ID:       g.runNextUnitID,
+		Team:     g.runActiveTeam,
+		Kind:     dishLife,
+		Q:        q,
+		R:        r,
+		HP:       runWhiteCellHP,
+		MaxHP:    runWhiteCellHP,
+		Attack:   runWhiteCellAttack,
+		Actions:  runSpawnAP,
+		Phase:    float64(g.runNextUnitID) * 1.37,
+		AnimFrom: runBoardAxialCenter(q, r),
+		AnimT:    1,
+	})
+	g.runSelectedUnitID = g.runNextUnitID
+	g.runNextUnitID++
+	g.runSpawnMode = false
+	g.runMessage = fmt.Sprintf("%s spawned", runUnitName(dishLife))
+	return true
+}
+
+func (g *Game) tryRunMove(q, r int) bool {
+	index, ok := g.selectedRunUnitIndex()
+	if !ok {
+		g.runMessage = "select a cell or your nest"
+		return false
+	}
+	unit := &g.runUnits[index]
+	if unit.Actions <= 0 {
+		g.runMessage = "that cell is spent"
+		return false
+	}
+	if !runTileExists(q, r) || runAxialDistance(unit.Q, unit.R, q, r) > runWhiteCellMove {
+		g.runMessage = "move one hex"
+		return false
+	}
+	if _, occupied := g.runUnitAt(q, r); occupied {
+		return false
+	}
+	if _, blocked := g.runWallAt(q, r); blocked {
+		g.runMessage = "wall blocks the way"
+		return false
+	}
+	if g.isRunBase(q, r, runTeamBlue) || g.isRunBase(q, r, runTeamRed) {
+		return false
+	}
+	unit.AnimFrom = g.runUnitVisualCenter(*unit)
+	unit.AnimT = 0
+	unit.Q = q
+	unit.R = r
+	unit.Actions--
+	g.captureRunWells(unit.Team)
+	g.runMessage = "moved"
+	return true
+}
+
+func (g *Game) advanceRunUnitAnimations(dt float64) {
+	for i := range g.runUnits {
+		if g.runUnits[i].AnimT >= 1 {
+			continue
+		}
+		g.runUnits[i].AnimT = math.Min(1, g.runUnits[i].AnimT+dt/runMoveAnimSeconds)
+	}
+}
+
+func (g *Game) advanceRunWallDropFX(dt float64) {
+	if len(g.runWallDropFX) == 0 {
+		return
+	}
+	write := 0
+	for _, fx := range g.runWallDropFX {
+		fx.Age += dt
+		if fx.Age >= runWallDropFXSeconds {
+			continue
+		}
+		g.runWallDropFX[write] = fx
+		write++
+	}
+	g.runWallDropFX = g.runWallDropFX[:write]
+}
+
+func (g *Game) tryRunAttackUnit(targetIndex int) bool {
+	attackerIndex, ok := g.selectedRunUnitIndex()
+	if !ok {
+		g.runMessage = "select one of your cells first"
+		return false
+	}
+	attacker := &g.runUnits[attackerIndex]
+	if attacker.Actions <= 0 {
+		g.runMessage = "that cell is spent"
+		return false
+	}
+	target := &g.runUnits[targetIndex]
+	if target.Team == attacker.Team || runAxialDistance(attacker.Q, attacker.R, target.Q, target.R) > 1 {
+		return false
+	}
+	damage := attacker.Attack
+	target.HP -= damage
+	attacker.Actions--
+	g.runMessage = fmt.Sprintf("hit for %d", damage)
+	if target.HP <= 0 {
+		deadID := target.ID
+		g.runUnits = append(g.runUnits[:targetIndex], g.runUnits[targetIndex+1:]...)
+		if g.runSelectedUnitID == deadID {
+			g.runSelectedUnitID = -1
+		}
+		g.runMessage = "cell dissolved"
+	}
+	return true
+}
+
+func (g *Game) tryRunAttackBase(team int) bool {
+	attackerIndex, ok := g.selectedRunUnitIndex()
+	if !ok {
+		g.runMessage = "select an attacking cell first"
+		return false
+	}
+	attacker := &g.runUnits[attackerIndex]
+	if attacker.Actions <= 0 {
+		g.runMessage = "that cell is spent"
+		return false
+	}
+	baseQ, baseR := runBaseCoord(team)
+	if runAxialDistance(attacker.Q, attacker.R, baseQ, baseR) > 1 {
+		return false
+	}
+	g.runBaseHP[team] = maxIntLocal(0, g.runBaseHP[team]-attacker.Attack)
+	attacker.Actions--
+	if g.runBaseHP[team] <= 0 {
+		g.runMessage = fmt.Sprintf("%s nest collapsed", runTeamLabel(team))
+		return true
+	}
+	g.runMessage = fmt.Sprintf("%s nest hp %d", runTeamLabel(team), g.runBaseHP[team])
+	return true
+}
+
+func (g *Game) endRunTurn() {
+	if g.runBaseHP[runTeamBlue] <= 0 || g.runBaseHP[runTeamRed] <= 0 {
+		return
+	}
+	g.captureRunWells(g.runActiveTeam)
+	income := runBaseIncome + g.runControlledWellCount(g.runActiveTeam)
+	g.runBroth[g.runActiveTeam] += income
+	endingTeam := g.runActiveTeam
+	nextTeam := opposingRunTeam(g.runActiveTeam)
+	g.runTurn++
+	g.beginRunTurn(nextTeam, fmt.Sprintf("%s gained %d ooze", runTeamLabel(endingTeam), income))
+}
+
+func (g *Game) beginRunTurn(team int, lead string) {
+	g.runActiveTeam = team
+	for i := range g.runUnits {
+		if g.runUnits[i].Team == g.runActiveTeam {
+			g.runUnits[i].Actions = runWhiteCellAP
+		}
+	}
+	g.runSelectedUnitID = -1
+	g.runSpawnMode = false
+	g.runBuyPending = false
+	g.runBoughtThisTurn[team] = false
+	g.runAITimer = runAITurnDelay
+	if team == runTeamBlue {
+		if !g.runCanBuy(team) {
+			g.runBoughtThisTurn[team] = true
+			g.runMessage = g.runBuyUnavailableMessage(lead)
+			return
+		}
+		g.runBuyPending = true
+		g.runSpawnMode = g.runCanBuy(team)
+		if lead != "" {
+			g.runMessage = g.runBuyChoiceMessage(lead)
+		} else {
+			g.runMessage = g.runBuyChoiceMessage("")
+		}
+		return
+	}
+	if lead != "" {
+		g.runMessage = lead
+		return
+	}
+	g.runMessage = fmt.Sprintf("%s cells are acting", runTeamLabel(team))
+}
+
+func (g *Game) advanceRunAutoBattle(dt float64) {
+	if g.runBaseHP[runTeamBlue] <= 0 || g.runBaseHP[runTeamRed] <= 0 {
+		return
+	}
+	if g.runBuyPending {
+		if g.finishRunBuyIfUnavailable("") {
+			return
+		}
+		g.runSpawnMode = g.runCanBuy(runTeamBlue)
+		return
+	}
+	if g.runAITimer > 0 {
+		g.runAITimer = math.Max(0, g.runAITimer-dt)
+		return
+	}
+	team := g.runActiveTeam
+	if !g.runBoughtThisTurn[team] {
+		g.runBoughtThisTurn[team] = true
+		if team == runTeamRed && g.runAutoTrySpawn(team) {
+			g.runAITimer = runAITurnDelay
+			return
+		}
+		if team == runTeamBlue && g.runCanBuy(team) {
+			g.runBuyPending = true
+			g.runSpawnMode = g.runCanBuy(team)
+			g.runMessage = g.runBuyChoiceMessage("")
+			return
+		}
+	}
+	if g.performRunAutoAction(team) {
+		g.runAITimer = runAITurnDelay
+		return
+	}
+	g.runMessage = fmt.Sprintf("%s passes", runTeamLabel(team))
+	g.endRunTurn()
+}
+
+func (g *Game) performRunAutoAction(team int) bool {
+	if g.runAutoTryAttack(team) {
+		return true
+	}
+	if g.runAutoTryMove(team) {
+		return true
+	}
+	return false
+}
+
+func (g *Game) runAutoTryAttack(team int) bool {
+	enemyTeam := opposingRunTeam(team)
+	for i := range g.runUnits {
+		unit := g.runUnits[i]
+		if unit.Team != team || unit.Actions <= 0 {
+			continue
+		}
+		g.runSelectedUnitID = unit.ID
+		baseQ, baseR := runBaseCoord(enemyTeam)
+		if runAxialDistance(unit.Q, unit.R, baseQ, baseR) <= 1 && g.tryRunAttackBase(enemyTeam) {
+			g.runMessage = fmt.Sprintf("%s bites the nest", runTeamLabel(team))
+			return true
+		}
+		targetIndex := -1
+		targetHP := runAIScoreInfinity
+		targetID := runAIScoreInfinity
+		for j := range g.runUnits {
+			target := g.runUnits[j]
+			if target.Team != enemyTeam || runAxialDistance(unit.Q, unit.R, target.Q, target.R) > 1 {
+				continue
+			}
+			if target.HP < targetHP || (target.HP == targetHP && target.ID < targetID) {
+				targetIndex = j
+				targetHP = target.HP
+				targetID = target.ID
+			}
+		}
+		if targetIndex >= 0 && g.tryRunAttackUnit(targetIndex) {
+			g.runMessage = fmt.Sprintf("%s cell attacks", runTeamLabel(team))
+			return true
+		}
+	}
+	return false
+}
+
+func (g *Game) runAutoTryMove(team int) bool {
+	bestUnitID := -1
+	bestQ, bestR := 0, 0
+	bestScore := runAIScoreInfinity
+	enemyTeam := opposingRunTeam(team)
+	for _, unit := range g.runUnits {
+		if unit.Team != team || unit.Actions <= 0 {
+			continue
+		}
+		targetQ, targetR := g.runAutoTargetForUnit(unit)
+		for _, tile := range runAdjacentTiles(unit.Q, unit.R) {
+			q, r := tile[0], tile[1]
+			if _, occupied := g.runUnitAt(q, r); occupied {
+				continue
+			}
+			if _, blocked := g.runWallAt(q, r); blocked {
+				continue
+			}
+			if g.isRunBase(q, r, runTeamBlue) || g.isRunBase(q, r, runTeamRed) {
+				continue
+			}
+			score := runAxialDistance(q, r, targetQ, targetR) * 100
+			if wellIndex, ok := g.runWellAt(q, r); ok && g.runWells[wellIndex].Owner != team {
+				score -= 38
+			}
+			if g.runTileAdjacentToEnemy(q, r, team) {
+				score -= 20
+			}
+			baseQ, baseR := runBaseCoord(enemyTeam)
+			if runAxialDistance(q, r, baseQ, baseR) <= 1 {
+				score -= 30
+			}
+			score += absInt(q-targetQ) + absInt(r-targetR)
+			if bestUnitID < 0 || score < bestScore || (score == bestScore && unit.ID < bestUnitID) {
+				bestScore = score
+				bestUnitID = unit.ID
+				bestQ = q
+				bestR = r
+			}
+		}
+	}
+	if bestUnitID < 0 {
+		return false
+	}
+	g.runSelectedUnitID = bestUnitID
+	if g.tryRunMove(bestQ, bestR) {
+		g.runMessage = fmt.Sprintf("%s cell advances", runTeamLabel(team))
+		return true
+	}
+	return false
+}
+
+func (g *Game) runAutoTryMoveUnit(unitID int) bool {
+	unitIndex := -1
+	for i := range g.runUnits {
+		if g.runUnits[i].ID == unitID {
+			unitIndex = i
+			break
+		}
+	}
+	if unitIndex < 0 {
+		return false
+	}
+	unit := g.runUnits[unitIndex]
+	if unit.Actions <= 0 {
+		return false
+	}
+	targetQ, targetR := g.runAutoTargetForUnit(unit)
+	bestQ, bestR := 0, 0
+	bestScore := runAIScoreInfinity
+	for _, tile := range runAdjacentTiles(unit.Q, unit.R) {
+		q, r := tile[0], tile[1]
+		if _, occupied := g.runUnitAt(q, r); occupied {
+			continue
+		}
+		if _, blocked := g.runWallAt(q, r); blocked {
+			continue
+		}
+		if g.isRunBase(q, r, runTeamBlue) || g.isRunBase(q, r, runTeamRed) {
+			continue
+		}
+		score := runAxialDistance(q, r, targetQ, targetR) * 100
+		if wellIndex, ok := g.runWellAt(q, r); ok && g.runWells[wellIndex].Owner != unit.Team {
+			score -= 38
+		}
+		if g.runTileAdjacentToEnemy(q, r, unit.Team) {
+			score -= 20
+		}
+		score += absInt(q-targetQ) + absInt(r-targetR)
+		if bestScore == runAIScoreInfinity || score < bestScore {
+			bestScore = score
+			bestQ = q
+			bestR = r
+		}
+	}
+	if bestScore == runAIScoreInfinity {
+		return false
+	}
+	g.runSelectedUnitID = unitID
+	return g.tryRunMove(bestQ, bestR)
+}
+
+func (g *Game) runAutoTrySpawn(team int) bool {
+	if !g.runCanBuy(team) {
+		return false
+	}
+	q, r, ok := g.runBestSpawnTile(team)
+	if !ok {
+		return false
+	}
+	g.runSpawnMode = true
+	g.selectedRosterUnit = 0
+	if g.spawnRunWhiteCell(q, r) {
+		g.runMessage = fmt.Sprintf("%s bought %s", runTeamLabel(team), runUnitName(dishLife))
+		return true
+	}
+	g.runSpawnMode = false
+	return false
+}
+
+func (g *Game) runAutoTargetForUnit(unit runUnit) (int, int) {
+	enemyTeam := opposingRunTeam(unit.Team)
+	nearestEnemyQ, nearestEnemyR := 0, 0
+	nearestEnemyDist := runAIScoreInfinity
+	for _, target := range g.runUnits {
+		if target.Team != enemyTeam {
+			continue
+		}
+		dist := runAxialDistance(unit.Q, unit.R, target.Q, target.R)
+		if dist < nearestEnemyDist {
+			nearestEnemyDist = dist
+			nearestEnemyQ = target.Q
+			nearestEnemyR = target.R
+		}
+	}
+	if nearestEnemyDist <= 2 {
+		return nearestEnemyQ, nearestEnemyR
+	}
+	bestWellQ, bestWellR := 0, 0
+	bestWellDist := runAIScoreInfinity
+	for _, well := range g.runWells {
+		if _, blocked := g.runWallAt(well.Q, well.R); blocked {
+			continue
+		}
+		if well.Owner == unit.Team {
+			continue
+		}
+		dist := runAxialDistance(unit.Q, unit.R, well.Q, well.R)
+		if dist < bestWellDist {
+			bestWellDist = dist
+			bestWellQ = well.Q
+			bestWellR = well.R
+		}
+	}
+	if bestWellDist < runAIScoreInfinity {
+		return bestWellQ, bestWellR
+	}
+	return runBaseCoord(enemyTeam)
+}
+
+func (g *Game) runTeamTarget(team int) (int, int) {
+	homeQ, homeR := runBaseCoord(team)
+	bestWellQ, bestWellR := 0, 0
+	bestWellDist := runAIScoreInfinity
+	for _, well := range g.runWells {
+		if _, blocked := g.runWallAt(well.Q, well.R); blocked {
+			continue
+		}
+		if well.Owner == team {
+			continue
+		}
+		dist := runAxialDistance(homeQ, homeR, well.Q, well.R)
+		if dist < bestWellDist {
+			bestWellDist = dist
+			bestWellQ = well.Q
+			bestWellR = well.R
+		}
+	}
+	if bestWellDist < runAIScoreInfinity {
+		return bestWellQ, bestWellR
+	}
+	return runBaseCoord(opposingRunTeam(team))
+}
+
+func (g *Game) runTileAdjacentToEnemy(q, r, team int) bool {
+	for _, unit := range g.runUnits {
+		if unit.Team == team {
+			continue
+		}
+		if runAxialDistance(q, r, unit.Q, unit.R) <= 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *Game) runCanBuy(team int) bool {
+	if team < runTeamBlue || team > runTeamRed {
+		return false
+	}
+	if g.runBroth[team] < runWhiteCellCost || g.runTeamUnitCount(team) >= runUnitLimit {
+		return false
+	}
+	_, _, ok := g.runBestSpawnTile(team)
+	return ok
+}
+
+func (g *Game) runBestSpawnTile(team int) (int, int, bool) {
+	targetQ, targetR := g.runTeamTarget(team)
+	bestQ, bestR := 0, 0
+	bestScore := runAIScoreInfinity
+	for _, tile := range g.runSpawnTiles(team) {
+		q, r := tile[0], tile[1]
+		if _, occupied := g.runUnitAt(q, r); occupied {
+			continue
+		}
+		if _, blocked := g.runWallAt(q, r); blocked {
+			continue
+		}
+		score := runAxialDistance(q, r, targetQ, targetR) * 10
+		if wellIndex, ok := g.runWellAt(q, r); ok && g.runWells[wellIndex].Owner != team {
+			score -= 3
+		}
+		if bestScore == runAIScoreInfinity || score < bestScore {
+			bestScore = score
+			bestQ = q
+			bestR = r
+		}
+	}
+	return bestQ, bestR, bestScore < runAIScoreInfinity
+}
+
+func (g *Game) runSpawnTiles(team int) [][2]int {
+	tiles := make([][2]int, 0, 7)
+	for q := -runBoardRadius; q <= runBoardRadius; q++ {
+		rMin := maxIntLocal(-runBoardRadius, -q-runBoardRadius)
+		rMax := minIntLocal(runBoardRadius, -q+runBoardRadius)
+		for r := rMin; r <= rMax; r++ {
+			if g.isRunSpawnTile(q, r, team) {
+				tiles = append(tiles, [2]int{q, r})
+			}
+		}
+	}
+	return tiles
+}
+
+func runAdjacentTiles(q, r int) [][2]int {
+	tiles := make([][2]int, 0, len(dishNeighborOffsets))
+	for _, offset := range dishNeighborOffsets {
+		nq := q + offset[0]
+		nr := r + offset[1]
+		if runTileExists(nq, nr) {
+			tiles = append(tiles, [2]int{nq, nr})
+		}
+	}
+	return tiles
+}
+
+func defaultRunWells() []runWell {
+	return []runWell{
+		{Q: -runBoardRadius, R: runBoardRadius, Owner: runTeamNone},
+		{Q: 0, R: 0, Owner: runTeamNone},
+		{Q: runBoardRadius, R: -runBoardRadius, Owner: runTeamNone},
+	}
+}
+
+func runTeamLabel(team int) string {
+	switch team {
+	case runTeamBlue:
+		return "Blue"
+	case runTeamRed:
+		return "Red"
+	default:
+		return "Neutral"
+	}
+}
+
+func runTeamColor(team int) color.RGBA {
+	switch team {
+	case runTeamBlue:
+		return color.RGBA{98, 192, 224, 245}
+	case runTeamRed:
+		return color.RGBA{226, 92, 112, 245}
+	default:
+		return color.RGBA{176, 188, 184, 220}
+	}
+}
+
+func opposingRunTeam(team int) int {
+	if team == runTeamBlue {
+		return runTeamRed
+	}
+	return runTeamBlue
+}
+
+func runBaseCoord(team int) (int, int) {
+	if team == runTeamRed {
+		return runBoardRadius, 0
+	}
+	return -runBoardRadius, 0
+}
+
+func runUnitName(kind int) string {
+	switch kind {
+	case dishLife:
+		return "White Cell"
+	case dishZombie:
+		return "Green Cell"
+	case dishSick:
+		return "Sick Cell"
+	default:
+		return "Cell"
+	}
+}
+
+func runUnitMove(kind int) int {
+	switch kind {
+	case dishLife:
+		return runWhiteCellMove
+	default:
+		return runWhiteCellMove
+	}
+}
+
+func runTileExists(q, r int) bool {
+	s := -q - r
+	return maxIntLocal(absInt(q), maxIntLocal(absInt(r), absInt(s))) <= runBoardRadius
+}
+
+func runAxialDistance(q1, r1, q2, r2 int) int {
+	return (absInt(q1-q2) + absInt(r1-r2) + absInt((q1+r1)-(q2+r2))) / 2
+}
+
+func (g *Game) runTeamUnitCount(team int) int {
+	count := 0
+	for _, unit := range g.runUnits {
+		if unit.Team == team {
+			count++
+		}
+	}
+	return count
+}
+
+func (g *Game) runUnitAt(q, r int) (int, bool) {
+	for i, unit := range g.runUnits {
+		if unit.Q == q && unit.R == r {
+			return i, true
+		}
+	}
+	return -1, false
+}
+
+func (g *Game) runWallAt(q, r int) (int, bool) {
+	for i, wall := range g.runWalls {
+		if wall.Q == q && wall.R == r {
+			return i, true
+		}
+	}
+	return -1, false
+}
+
+func (g *Game) selectedRunUnitIndex() (int, bool) {
+	if g.runSelectedUnitID < 0 {
+		return -1, false
+	}
+	for i, unit := range g.runUnits {
+		if unit.ID == g.runSelectedUnitID {
+			return i, true
+		}
+	}
+	return -1, false
+}
+
+func (g *Game) runWellAt(q, r int) (int, bool) {
+	for i, well := range g.runWells {
+		if well.Q == q && well.R == r {
+			return i, true
+		}
+	}
+	return -1, false
+}
+
+func (g *Game) isRunBase(q, r, team int) bool {
+	baseQ, baseR := runBaseCoord(team)
+	return q == baseQ && r == baseR
+}
+
+func (g *Game) isRunSpawnTile(q, r, team int) bool {
+	if !runTileExists(q, r) || g.isRunBase(q, r, opposingRunTeam(team)) {
+		return false
+	}
+	baseQ, baseR := runBaseCoord(team)
+	return runAxialDistance(q, r, baseQ, baseR) <= 1
+}
+
+func (g *Game) captureRunWells(team int) {
+	for i := range g.runWells {
+		if _, blocked := g.runWallAt(g.runWells[i].Q, g.runWells[i].R); blocked {
+			continue
+		}
+		if unitIndex, ok := g.runUnitAt(g.runWells[i].Q, g.runWells[i].R); ok && g.runUnits[unitIndex].Team == team {
+			g.runWells[i].Owner = team
+		}
+	}
+}
+
+func (g *Game) runControlledWellCount(team int) int {
+	count := 0
+	for _, well := range g.runWells {
+		if _, blocked := g.runWallAt(well.Q, well.R); blocked {
+			continue
+		}
+		if well.Owner == team {
+			count++
+		}
+	}
+	return count
+}
+
+func (g *Game) runUnitVisualCenter(unit runUnit) core.Vec3 {
+	target := runBoardAxialCenter(unit.Q, unit.R)
+	if unit.AnimT >= 1 {
+		return target
+	}
+	t := clampRange(unit.AnimT, 0, 1)
+	t = t * t * (3 - 2*t)
+	return unit.AnimFrom.Mul(1 - t).Add(target.Mul(t))
+}
+
+func (g *Game) pickRunTile(x, y int) (int, int, bool) {
+	cx, cy := g.runBoardCenter()
+	scale := g.runBoardScale()
+	p := screenPoint{x: float64(x), y: float64(y)}
+	bestQ, bestR := 0, 0
+	bestDist := math.MaxFloat64
+	for q := -runBoardRadius; q <= runBoardRadius; q++ {
+		rMin := maxIntLocal(-runBoardRadius, -q-runBoardRadius)
+		rMax := minIntLocal(runBoardRadius, -q+runBoardRadius)
+		for r := rMin; r <= rMax; r++ {
+			center := runBoardAxialCenter(q, r)
+			screenX := cx + center.X*scale
+			screenY := cy + center.Y*scale
+			dist := math.Hypot(float64(x)-screenX, float64(y)-screenY)
+			if dist > scale || dist >= bestDist {
+				continue
+			}
+			localPoints := tacticalHexPoints(center, scale)
+			points := make([]screenPoint, 0, len(localPoints))
+			for _, point := range localPoints {
+				points = append(points, screenPoint{x: cx + point.x, y: cy + point.y})
+			}
+			if pointInPolygon(p, points) {
+				bestQ = q
+				bestR = r
+				bestDist = dist
+			}
+		}
+	}
+	return bestQ, bestR, bestDist < math.MaxFloat64
 }
 
 func (g *Game) beginDrag(touchID ebiten.TouchID, x, y int) {
@@ -2075,13 +3305,13 @@ func (g *Game) drawDishCells(screen *ebiten.Image) {
 		cell := &cells[i]
 		x := cx + cell.Center.X*scale
 		y := cy + cell.Center.Y*scale
-		fill := dishCellColor(cell.Kind)
+		fill := dishCellBaseColor(cell.Kind)
 		pulse := 0.5 + 0.5*math.Sin(g.animationTime*(1.2+float64(cell.Kind)*0.18)+cell.Phase)
-		fill = core.BlendColor(fill, color.RGBA{226, 255, 212, 255}, 0.08*pulse)
+		fill = core.BlendColor(fill, color.RGBA{96, 136, 126, 255}, 0.035*pulse)
 		if cell.Influence > 0 {
-			fill = core.BlendColor(fill, dishInfluenceColor(cell.Influence), 0.34)
+			fill = core.BlendColor(fill, dishInfluenceColor(cell.Influence), 0.16)
 		}
-		points := dishHexPoints(x, y, scale*0.52)
+		points := dishHexPoints(x, y, scale*dishCellOverlap)
 		verts := make([]ebiten.Vertex, 0, len(points))
 		for _, p := range points {
 			verts = append(verts, ebiten.Vertex{DstX: float32(p.x), DstY: float32(p.y), SrcX: 0, SrcY: 0})
@@ -2092,7 +3322,26 @@ func (g *Game) drawDishCells(screen *ebiten.Image) {
 			edge = dishInfluenceColor(cell.Influence)
 		}
 		drawPolygonStroke(screen, verts, edge)
-		drawDisc(screen, float32(x+scale*0.08*math.Sin(cell.Phase)), float32(y-scale*0.06), float32(scale*(0.10+0.035*pulse)), core.ScaleColor(fill, 1.34))
+	}
+	for i := range cells {
+		cell := &cells[i]
+		if cell.Kind == dishEmpty || cell.Kind == dishWall {
+			continue
+		}
+		x, y := g.dishOccupantScreenCenter(*cell, cx, cy, scale)
+		fill := dishCellColor(cell.Kind)
+		pulse := 0.5 + 0.5*math.Sin(g.animationTime*(1.8+float64(cell.Kind)*0.22)+cell.Phase)
+		if cell.Kind == dishZombie && cell.Boost > 0 {
+			fill = core.BlendColor(fill, color.RGBA{184, 255, 184, 255}, 0.24)
+		}
+		bodyScale := 0.33 + 0.025*pulse
+		if cell.Kind == dishDead {
+			bodyScale = 0.25 + 0.015*pulse
+		}
+		drawDisc(screen, float32(x+scale*0.035), float32(y+scale*0.055), float32(scale*bodyScale), color.RGBA{0, 0, 0, 72})
+		drawDisc(screen, float32(x), float32(y), float32(scale*bodyScale), fill)
+		drawDisc(screen, float32(x+scale*0.07*math.Sin(cell.Phase)), float32(y-scale*0.07), float32(scale*(0.075+0.018*pulse)), core.ScaleColor(fill, 1.22))
+		vector.StrokeCircle(screen, float32(x), float32(y), float32(scale*(bodyScale+0.035)), 1.4, core.ScaleColor(fill, 0.78), false)
 	}
 }
 
@@ -2101,22 +3350,24 @@ func (g *Game) drawDishHud(screen *ebiten.Image) {
 	if g.dishTileID >= 0 {
 		title = fmt.Sprintf("PETRI DISH %d", g.dishTileID)
 	}
+	life, zombie, sick, dead, wall := g.dishCounts()
+	speedLine := "time paused"
+	if g.dishRunning() {
+		speedLine = fmt.Sprintf("time %.1fx", g.dishTimeScale)
+	}
 	g.drawAlphaDebugTextBlock(screen, 24, 22, []string{
 		title,
-		"automated culture",
-		"tap cells to poke/prod",
+		fmt.Sprintf("tick %d   %s", g.dishGeneration, speedLine),
+		fmt.Sprintf("life %d  zed %d  sick %d", life, zombie, sick),
 	}, 1)
-	x := 24.0
-	y := float64(g.screenHeight) - 154
-	w := float64(g.screenWidth) - 48
-	h := 74.0
+	x, y, w, h := g.dishHudPanelRect()
 	drawRoundedRect(screen, float32(x), float32(y), float32(w), float32(h), 8, color.RGBA{8, 18, 24, 218})
 	drawRectOutline(screen, float32(x), float32(y), float32(w), float32(h), color.RGBA{122, 214, 190, 220})
 	g.drawAlphaDebugTextBlock(screen, x+12, y+12, []string{
-		"Culture output: latent perk spores",
-		"Influence cycle: feed / stress / isolate / clear",
-		"Battle perks will hook in here next.",
+		fmt.Sprintf("dead %d   walls %d", dead, wall),
+		"pause to seed white / green",
 	}, 1)
+	g.drawDishTimeSlider(screen)
 }
 
 func (g *Game) drawTacticalHudMeters(screen *ebiten.Image) {
@@ -2180,9 +3431,14 @@ func (g *Game) drawRun(screen *ebiten.Image) {
 func (g *Game) drawRunBoard(screen *ebiten.Image) {
 	cx, cy := g.runBoardCenter()
 	scale := g.runBoardScale()
-	for q := -3; q <= 3; q++ {
-		rMin := maxIntLocal(-3, -q-3)
-		rMax := minIntLocal(3, -q+3)
+	selectedIndex, selectedOK := g.selectedRunUnitIndex()
+	var selected runUnit
+	if selectedOK {
+		selected = g.runUnits[selectedIndex]
+	}
+	for q := -runBoardRadius; q <= runBoardRadius; q++ {
+		rMin := maxIntLocal(-runBoardRadius, -q-runBoardRadius)
+		rMax := minIntLocal(runBoardRadius, -q+runBoardRadius)
 		for r := rMin; r <= rMax; r++ {
 			center := runBoardAxialCenter(q, r)
 			points := tacticalHexPoints(center, scale)
@@ -2194,29 +3450,67 @@ func (g *Game) drawRunBoard(screen *ebiten.Image) {
 			if (q+r)&1 == 0 {
 				fill = color.RGBA{30, 58, 62, 232}
 			}
+			border := color.RGBA{84, 132, 138, 210}
+			_, occupied := g.runUnitAt(q, r)
+			_, blocked := g.runWallAt(q, r)
+			if g.isRunBase(q, r, runTeamBlue) {
+				fill = core.BlendColor(fill, runTeamColor(runTeamBlue), 0.35)
+				border = runTeamColor(runTeamBlue)
+			}
+			if g.isRunBase(q, r, runTeamRed) {
+				fill = core.BlendColor(fill, runTeamColor(runTeamRed), 0.35)
+				border = runTeamColor(runTeamRed)
+			}
+			if wellIndex, ok := g.runWellAt(q, r); ok {
+				well := g.runWells[wellIndex]
+				wellColor := color.RGBA{218, 196, 112, 235}
+				if well.Owner != runTeamNone {
+					wellColor = core.BlendColor(wellColor, runTeamColor(well.Owner), 0.34)
+				}
+				fill = core.BlendColor(fill, wellColor, 0.22)
+			}
+			if blocked {
+				fill = core.BlendColor(fill, color.RGBA{88, 92, 94, 245}, 0.48)
+				border = color.RGBA{154, 160, 158, 230}
+			}
+			if (g.runSpawnMode || g.runBuyPending) && g.isRunSpawnTile(q, r, g.runActiveTeam) && !occupied && !blocked {
+				fill = core.BlendColor(fill, runTeamColor(g.runActiveTeam), 0.3)
+				border = color.RGBA{238, 246, 212, 245}
+			}
+			if selectedOK && selected.Team == g.runActiveTeam && selected.Actions > 0 {
+				distance := runAxialDistance(selected.Q, selected.R, q, r)
+				if distance > 0 && distance <= runUnitMove(selected.Kind) && !occupied && !blocked && !g.isRunBase(q, r, runTeamBlue) && !g.isRunBase(q, r, runTeamRed) {
+					fill = core.BlendColor(fill, color.RGBA{178, 232, 194, 230}, 0.28)
+				}
+				if distance == 1 {
+					if unitIndex, ok := g.runUnitAt(q, r); ok && g.runUnits[unitIndex].Team != selected.Team {
+						border = color.RGBA{252, 178, 164, 245}
+					}
+					if g.isRunBase(q, r, opposingRunTeam(selected.Team)) {
+						border = color.RGBA{252, 178, 164, 245}
+					}
+				}
+				if selected.Q == q && selected.R == r {
+					border = color.RGBA{246, 252, 214, 255}
+				}
+			}
 			drawFilledPolygon(screen, verts, fill)
-			drawPolygonStroke(screen, verts, color.RGBA{84, 132, 138, 210})
+			drawPolygonStroke(screen, verts, border)
 		}
 	}
-	for i, unit := range g.roster {
-		q := -2
-		r := i - 1
-		center := runBoardAxialCenter(q, r)
-		x := cx + center.X*scale
-		y := cy + center.Y*scale
-		drawDisc(screen, float32(x+3), float32(y+5), float32(scale*0.24), color.RGBA{0, 0, 0, 80})
-		drawDisc(screen, float32(x), float32(y), float32(scale*0.23), unit.Fill)
-		if i == g.selectedRosterUnit {
-			vector.StrokeCircle(screen, float32(x), float32(y), float32(scale*0.32), 2, color.RGBA{238, 252, 214, 240}, false)
-		}
+	for _, well := range g.runWells {
+		g.drawRunWell(screen, well, cx, cy, scale)
 	}
-	for i := 0; i < 3; i++ {
-		center := runBoardAxialCenter(2, i-1)
-		x := cx + center.X*scale
-		y := cy + center.Y*scale
-		drawDisc(screen, float32(x+3), float32(y+5), float32(scale*0.22), color.RGBA{0, 0, 0, 80})
-		drawDisc(screen, float32(x), float32(y), float32(scale*0.21), color.RGBA{184, 72, 86, 235})
-		drawDisc(screen, float32(x-scale*0.05), float32(y-scale*0.05), float32(scale*0.055), color.RGBA{250, 198, 188, 230})
+	for _, wall := range g.runWalls {
+		g.drawRunWall(screen, wall, cx, cy, scale)
+	}
+	g.drawRunBase(screen, runTeamBlue, cx, cy, scale)
+	g.drawRunBase(screen, runTeamRed, cx, cy, scale)
+	for _, unit := range g.runUnits {
+		g.drawRunUnit(screen, unit, cx, cy, scale)
+	}
+	for _, fx := range g.runWallDropFX {
+		g.drawRunWallDropFX(screen, fx, cx, cy, scale)
 	}
 }
 
@@ -2225,40 +3519,313 @@ func (g *Game) drawRunHud(screen *ebiten.Image) {
 	if g.runTileID >= 0 {
 		title = fmt.Sprintf("TACTICAL RUN %d", g.runTileID)
 	}
-	g.drawAlphaDebugTextBlock(screen, 24, 22, []string{
+	status := g.runMessage
+	if g.runBaseHP[runTeamBlue] <= 0 {
+		status = "Red nest wins"
+	} else if g.runBaseHP[runTeamRed] <= 0 {
+		status = "Blue nest wins"
+	}
+	lines := []string{
 		title,
-		fmt.Sprintf("turn %d", g.runTurn),
-		"prototype sortie",
-	}, 1)
+		fmt.Sprintf("%s turn %d", strings.ToUpper(runTeamLabel(g.runActiveTeam)), g.runTurn),
+		fmt.Sprintf("nest hp B%d / R%d", g.runBaseHP[runTeamBlue], g.runBaseHP[runTeamRed]),
+	}
+	if g.runBuyPending {
+		if g.runCanBuy(runTeamBlue) {
+			lines = append(lines, "BUILD: buy or skip")
+		} else {
+			lines = append(lines, "BUILD: skip to bank")
+		}
+	} else {
+		lines = append(lines, "AUTO BATTLE")
+	}
+	if status != "" {
+		lines = append(lines, status)
+	}
+	g.drawAlphaDebugTextBlock(screen, 24, 22, lines, 1)
+	g.drawRunBrothPools(screen)
 	x, y, w, h := g.endTurnButtonRect()
-	drawRoundedRect(screen, float32(x), float32(y), float32(w), float32(h), 9, color.RGBA{62, 76, 94, 232})
+	fill := core.BlendColor(color.RGBA{42, 54, 66, 236}, runTeamColor(g.runActiveTeam), 0.28)
+	drawRoundedRect(screen, float32(x), float32(y), float32(w), float32(h), 9, fill)
 	drawRectOutline(screen, float32(x), float32(y), float32(w), float32(h), color.RGBA{188, 214, 238, 245})
-	ebitenutil.DebugPrintAt(screen, "END TURN", int(x)+14, int(y)+12)
+	label := "END TURN"
+	if g.runSkipAvailable() {
+		label = "SKIP"
+	} else if g.runActiveTeam == runTeamRed {
+		label = "AI TURN"
+	} else {
+		label = "AUTO"
+	}
+	ebitenutil.DebugPrintAt(screen, label, int(x)+14, int(y)+12)
+}
+
+func (g *Game) drawRunBrothPools(screen *ebiten.Image) {
+	x := 24.0
+	y := 98.0
+	gap := 8.0
+	w := (float64(g.screenWidth) - x*2 - gap) * 0.5
+	h := 58.0
+	g.drawRunBrothPool(screen, runTeamBlue, x, y, w, h)
+	g.drawRunBrothPool(screen, runTeamRed, x+w+gap, y, w, h)
+}
+
+func (g *Game) drawRunBrothPool(screen *ebiten.Image, team int, x, y, w, h float64) {
+	teamColor := runTeamColor(team)
+	fill := core.BlendColor(color.RGBA{10, 20, 28, 238}, teamColor, 0.2)
+	border := color.RGBA{82, 112, 128, 220}
+	if g.runActiveTeam == team {
+		border = core.BlendColor(teamColor, color.RGBA{250, 244, 184, 255}, 0.34)
+		fill = core.BlendColor(fill, teamColor, 0.16)
+	}
+	drawRoundedRect(screen, float32(x), float32(y), float32(w), float32(h), 8, fill)
+	drawRectOutline(screen, float32(x), float32(y), float32(w), float32(h), border)
+	g.drawBrothIcon(screen, x+20, y+h*0.5, 14, teamColor)
+	ebitenutil.DebugPrintAt(screen, strings.ToUpper(runTeamLabel(team))+" OOZE", int(x)+40, int(y)+7)
+	ebitenutil.DebugPrintAt(screen, fmt.Sprintf("income +%d", runBaseIncome+g.runControlledWellCount(team)), int(x)+40, int(y)+39)
+	g.drawLargeRunNumber(screen, g.runBroth[team], x+w-54, y+9, 34, color.RGBA{240, 232, 164, 255})
+}
+
+func (g *Game) drawBrothIcon(screen *ebiten.Image, x, y, radius float64, teamColor color.RGBA) {
+	drawDisc(screen, float32(x), float32(y+radius*0.24), float32(radius*0.7), core.BlendColor(color.RGBA{220, 190, 92, 245}, teamColor, 0.2))
+	drawDisc(screen, float32(x), float32(y-radius*0.3), float32(radius*0.48), color.RGBA{248, 226, 136, 248})
+	drawDisc(screen, float32(x-radius*0.18), float32(y-radius*0.46), float32(radius*0.14), color.RGBA{255, 250, 206, 235})
+	vector.StrokeCircle(screen, float32(x), float32(y+radius*0.04), float32(radius*0.72), 1.5, color.RGBA{90, 76, 42, 210}, false)
+}
+
+func (g *Game) drawLargeRunNumber(screen *ebiten.Image, value int, x, y, height float64, clr color.RGBA) {
+	text := fmt.Sprintf("%d", maxIntLocal(0, value))
+	digitW := height * 0.56
+	spacing := height * 0.16
+	totalW := float64(len(text))*digitW + float64(maxIntLocal(0, len(text)-1))*spacing
+	startX := x + 34 - totalW
+	for i, digit := range text {
+		g.drawSevenSegmentDigit(screen, digit, startX+float64(i)*(digitW+spacing), y, digitW, height, clr)
+	}
+}
+
+func (g *Game) drawSevenSegmentDigit(screen *ebiten.Image, digit rune, x, y, w, h float64, clr color.RGBA) {
+	segments := map[rune][7]bool{
+		'0': {true, true, true, true, true, true, false},
+		'1': {false, true, true, false, false, false, false},
+		'2': {true, true, false, true, true, false, true},
+		'3': {true, true, true, true, false, false, true},
+		'4': {false, true, true, false, false, true, true},
+		'5': {true, false, true, true, false, true, true},
+		'6': {true, false, true, true, true, true, true},
+		'7': {true, true, true, false, false, false, false},
+		'8': {true, true, true, true, true, true, true},
+		'9': {true, true, true, true, false, true, true},
+	}
+	active, ok := segments[digit]
+	if !ok {
+		return
+	}
+	t := math.Max(2, h*0.12)
+	inactive := color.RGBA{70, 76, 70, 95}
+	drawSegment := func(on bool, sx, sy, sw, sh float64) {
+		segColor := inactive
+		if on {
+			segColor = clr
+		}
+		drawRoundedRect(screen, float32(sx), float32(sy), float32(sw), float32(sh), float32(t*0.45), segColor)
+	}
+	drawSegment(active[0], x+t*0.55, y, w-t*1.1, t)
+	drawSegment(active[1], x+w-t, y+t*0.45, t, h*0.5-t*0.75)
+	drawSegment(active[2], x+w-t, y+h*0.5+t*0.3, t, h*0.5-t*0.75)
+	drawSegment(active[3], x+t*0.55, y+h-t, w-t*1.1, t)
+	drawSegment(active[4], x, y+h*0.5+t*0.3, t, h*0.5-t*0.75)
+	drawSegment(active[5], x, y+t*0.45, t, h*0.5-t*0.75)
+	drawSegment(active[6], x+t*0.55, y+h*0.5-t*0.5, w-t*1.1, t)
 }
 
 func (g *Game) drawRunRoster(screen *ebiten.Image) {
+	if len(g.roster) == 0 {
+		return
+	}
 	x := 20.0
-	y := float64(g.screenHeight) - 156
+	y := float64(g.screenHeight) - 170
 	w := float64(g.screenWidth) - 40
-	h := 86.0
+	h := 98.0
 	drawRoundedRect(screen, float32(x), float32(y), float32(w), float32(h), 8, color.RGBA{8, 18, 28, 224})
 	drawRectOutline(screen, float32(x), float32(y), float32(w), float32(h), color.RGBA{122, 196, 210, 220})
+	ebitenutil.DebugPrintAt(screen, "AVAILABLE UNITS", int(x)+10, int(y)+7)
 	for i, unit := range g.roster {
-		cardW := (w - 32) / 3
-		cardX := x + 10 + float64(i)*(cardW+6)
-		cardY := y + 12
+		cardX, cardY, cardW, cardH := g.runRosterCardRect(i)
 		fill := color.RGBA{18, 34, 46, 232}
 		border := color.RGBA{80, 118, 136, 220}
-		if i == g.selectedRosterUnit {
+		if !g.runBuyPending || !g.runCanBuy(runTeamBlue) {
+			fill = color.RGBA{18, 24, 30, 220}
+			border = color.RGBA{70, 78, 86, 180}
+		}
+		if i == g.selectedRosterUnit && g.runBuyPending {
 			fill = color.RGBA{28, 70, 72, 238}
 			border = color.RGBA{132, 238, 214, 245}
 		}
-		drawRoundedRect(screen, float32(cardX), float32(cardY), float32(cardW), 62, 6, fill)
-		drawRectOutline(screen, float32(cardX), float32(cardY), float32(cardW), 62, border)
+		drawRoundedRect(screen, float32(cardX), float32(cardY), float32(cardW), float32(cardH), 6, fill)
+		drawRectOutline(screen, float32(cardX), float32(cardY), float32(cardW), float32(cardH), border)
 		drawDisc(screen, float32(cardX+16), float32(cardY+18), 7, unit.Fill)
 		ebitenutil.DebugPrintAt(screen, unit.Name, int(cardX)+28, int(cardY)+8)
-		ebitenutil.DebugPrintAt(screen, unit.Trait, int(cardX)+8, int(cardY)+34)
+		ebitenutil.DebugPrintAt(screen, fmt.Sprintf("%s  hp%d  move%d", unit.Trait, unit.HP, unit.Move), int(cardX)+8, int(cardY)+32)
 	}
+	if g.runSkipAvailable() {
+		g.drawRunSkipCard(screen)
+	}
+}
+
+func (g *Game) drawRunSkipCard(screen *ebiten.Image) {
+	if !g.runSkipAvailable() {
+		return
+	}
+	x, y, w, h := g.runSkipCardRect()
+	fill := color.RGBA{20, 30, 38, 232}
+	border := color.RGBA{92, 120, 136, 220}
+	if g.runBuyPending {
+		fill = color.RGBA{44, 50, 58, 238}
+		border = color.RGBA{214, 228, 188, 245}
+	}
+	drawRoundedRect(screen, float32(x), float32(y), float32(w), float32(h), 6, fill)
+	drawRectOutline(screen, float32(x), float32(y), float32(w), float32(h), border)
+	ebitenutil.DebugPrintAt(screen, "SKIP", int(x)+12, int(y)+9)
+	ebitenutil.DebugPrintAt(screen, "bank ooze + wall", int(x)+12, int(y)+32)
+}
+
+func (g *Game) drawRunWell(screen *ebiten.Image, well runWell, cx, cy, scale float64) {
+	center := runBoardAxialCenter(well.Q, well.R)
+	x := cx + center.X*scale
+	y := cy + center.Y*scale
+	ownerColor := runTeamColor(well.Owner)
+	drawDisc(screen, float32(x+scale*0.05), float32(y+scale*0.08), float32(scale*0.2), color.RGBA{0, 0, 0, 75})
+	drawDisc(screen, float32(x), float32(y), float32(scale*0.19), color.RGBA{216, 188, 98, 235})
+	vector.StrokeCircle(screen, float32(x), float32(y), float32(scale*0.22), 2, ownerColor, false)
+	drawDisc(screen, float32(x), float32(y-scale*0.04), float32(scale*0.07), color.RGBA{250, 234, 172, 245})
+	ebitenutil.DebugPrintAt(screen, "+", int(x)-3, int(y)-7)
+}
+
+func (g *Game) drawRunWall(screen *ebiten.Image, wall runWall, cx, cy, scale float64) {
+	center := runBoardAxialCenter(wall.Q, wall.R)
+	x := cx + center.X*scale
+	y := cy + center.Y*scale
+	drawDisc(screen, float32(x+scale*0.06), float32(y+scale*0.11), float32(scale*0.27), color.RGBA{0, 0, 0, 82})
+	points := []screenPoint{
+		{x: x - scale*0.28, y: y + scale*0.17},
+		{x: x - scale*0.2, y: y - scale*0.13},
+		{x: x + scale*0.02, y: y - scale*0.28},
+		{x: x + scale*0.25, y: y - scale*0.12},
+		{x: x + scale*0.3, y: y + scale*0.18},
+		{x: x + scale*0.02, y: y + scale*0.28},
+	}
+	verts := make([]ebiten.Vertex, 0, len(points))
+	for _, point := range points {
+		verts = append(verts, ebiten.Vertex{DstX: float32(point.x), DstY: float32(point.y), SrcX: 0, SrcY: 0})
+	}
+	drawFilledPolygon(screen, verts, color.RGBA{94, 102, 102, 245})
+	drawPolygonStroke(screen, verts, color.RGBA{178, 188, 180, 245})
+	vector.StrokeLine(screen, float32(x-scale*0.11), float32(y-scale*0.15), float32(x+scale*0.03), float32(y+scale*0.05), 1.4, color.RGBA{62, 70, 70, 230}, false)
+	vector.StrokeLine(screen, float32(x+scale*0.12), float32(y-scale*0.1), float32(x-scale*0.02), float32(y+scale*0.18), 1.4, color.RGBA{62, 70, 70, 230}, false)
+}
+
+func (g *Game) drawRunWallDropFX(screen *ebiten.Image, fx runWallDropFX, cx, cy, scale float64) {
+	center := runBoardAxialCenter(fx.Q, fx.R)
+	x := cx + center.X*scale
+	y := cy + center.Y*scale
+	t := clampRange(fx.Age/runWallDropFXSeconds, 0, 1)
+	fade := uint8(clampRange(1-t, 0, 1) * 255)
+	teamColor := color.RGBA{222, 212, 156, fade}
+	if fx.Hit {
+		teamColor = runTeamColor(fx.Team)
+		teamColor.A = fade
+	}
+	coreColor := core.BlendColor(color.RGBA{246, 224, 132, fade}, teamColor, 0.32)
+	if fx.Lethal {
+		coreColor = core.BlendColor(color.RGBA{255, 238, 188, fade}, teamColor, 0.52)
+	}
+
+	ring := scale * (0.22 + 0.55*t)
+	vector.StrokeCircle(screen, float32(x), float32(y), float32(ring), 3.2, coreColor, false)
+	vector.StrokeCircle(screen, float32(x), float32(y), float32(scale*(0.16+0.22*t)), 1.8, color.RGBA{255, 246, 204, fade}, false)
+	drawDisc(screen, float32(x), float32(y), float32(scale*(0.2+0.08*(1-t))), color.RGBA{236, 210, 130, uint8(float64(fade) * 0.28)})
+
+	fallT := clampRange(t/0.46, 0, 1)
+	fallY := y - scale*(1.12*(1-fallT)*(1-fallT))
+	rockSize := scale * (0.18 + 0.08*(1-fallT))
+	g.drawRunDropRock(screen, x, fallY, rockSize, uint8(clampRange(1-t*1.25, 0, 1)*255))
+
+	crackAlpha := uint8(clampRange(1-t*1.1, 0, 1) * 210)
+	for i := 0; i < 6; i++ {
+		angle := float64(i)*math.Pi/3 + 0.22
+		inner := scale * (0.12 + 0.08*t)
+		outer := scale * (0.28 + 0.18*t)
+		vector.StrokeLine(screen,
+			float32(x+math.Cos(angle)*inner),
+			float32(y+math.Sin(angle)*inner),
+			float32(x+math.Cos(angle)*outer),
+			float32(y+math.Sin(angle)*outer),
+			1.3,
+			color.RGBA{255, 236, 172, crackAlpha},
+			false,
+		)
+	}
+	if fx.Hit {
+		labelY := y - scale*(0.62+0.18*t)
+		ebitenutil.DebugPrintAt(screen, "-1", int(x)-8, int(labelY))
+		vector.StrokeCircle(screen, float32(x), float32(y), float32(scale*0.38), 2.4, teamColor, false)
+	}
+}
+
+func (g *Game) drawRunDropRock(screen *ebiten.Image, x, y, size float64, alpha uint8) {
+	if alpha == 0 {
+		return
+	}
+	points := []screenPoint{
+		{x: x - size*0.95, y: y + size*0.22},
+		{x: x - size*0.58, y: y - size*0.68},
+		{x: x + size*0.12, y: y - size*0.86},
+		{x: x + size*0.82, y: y - size*0.32},
+		{x: x + size*0.72, y: y + size*0.54},
+		{x: x - size*0.1, y: y + size*0.82},
+	}
+	verts := make([]ebiten.Vertex, 0, len(points))
+	for _, point := range points {
+		verts = append(verts, ebiten.Vertex{DstX: float32(point.x), DstY: float32(point.y), SrcX: 0, SrcY: 0})
+	}
+	drawFilledPolygon(screen, verts, color.RGBA{112, 118, 114, alpha})
+	drawPolygonStroke(screen, verts, color.RGBA{232, 228, 204, alpha})
+	vector.StrokeLine(screen, float32(x-size*0.35), float32(y-size*0.45), float32(x+size*0.18), float32(y-size*0.08), 1.2, color.RGBA{62, 68, 66, alpha}, false)
+	vector.StrokeLine(screen, float32(x+size*0.32), float32(y-size*0.3), float32(x-size*0.04), float32(y+size*0.42), 1.2, color.RGBA{62, 68, 66, alpha}, false)
+}
+
+func (g *Game) drawRunBase(screen *ebiten.Image, team int, cx, cy, scale float64) {
+	q, r := runBaseCoord(team)
+	center := runBoardAxialCenter(q, r)
+	x := cx + center.X*scale
+	y := cy + center.Y*scale
+	teamColor := runTeamColor(team)
+	body := core.BlendColor(color.RGBA{44, 52, 62, 245}, teamColor, 0.42)
+	drawDisc(screen, float32(x+scale*0.07), float32(y+scale*0.1), float32(scale*0.39), color.RGBA{0, 0, 0, 90})
+	drawDisc(screen, float32(x), float32(y), float32(scale*0.36), body)
+	vector.StrokeCircle(screen, float32(x), float32(y), float32(scale*0.4), 3, teamColor, false)
+	drawDisc(screen, float32(x-scale*0.09), float32(y-scale*0.07), float32(scale*0.08), core.BlendColor(teamColor, color.RGBA{255, 255, 255, 255}, 0.45))
+	drawDisc(screen, float32(x+scale*0.1), float32(y+scale*0.04), float32(scale*0.06), color.RGBA{238, 248, 242, 220})
+	ebitenutil.DebugPrintAt(screen, fmt.Sprintf("%d", g.runBaseHP[team]), int(x)-4, int(y)+8)
+}
+
+func (g *Game) drawRunUnit(screen *ebiten.Image, unit runUnit, cx, cy, scale float64) {
+	center := g.runUnitVisualCenter(unit)
+	x := cx + center.X*scale
+	y := cy + center.Y*scale + math.Sin(g.animationTime*3.2+unit.Phase)*scale*0.03
+	teamColor := runTeamColor(unit.Team)
+	body := dishCellColor(unit.Kind)
+	if unit.Team == runTeamRed {
+		body = core.BlendColor(body, color.RGBA{255, 198, 204, 255}, 0.15)
+	}
+	drawDisc(screen, float32(x+scale*0.06), float32(y+scale*0.09), float32(scale*0.29), color.RGBA{0, 0, 0, 85})
+	drawDisc(screen, float32(x), float32(y), float32(scale*0.28), teamColor)
+	drawDisc(screen, float32(x), float32(y), float32(scale*0.22), body)
+	drawDisc(screen, float32(x-scale*0.06), float32(y-scale*0.07), float32(scale*0.055), color.RGBA{255, 255, 255, 210})
+	if unit.ID == g.runSelectedUnitID {
+		vector.StrokeCircle(screen, float32(x), float32(y), float32(scale*0.34), 2, color.RGBA{246, 252, 214, 245}, false)
+	}
+	ebitenutil.DebugPrintAt(screen, fmt.Sprintf("%d/%d", unit.HP, unit.Actions), int(x)-10, int(y)+int(scale*0.24))
 }
 
 func (g *Game) drawTacticalMap(screen *ebiten.Image) {
@@ -4141,17 +5708,21 @@ func (g *Game) pickDishCell(x, y int) (int, bool) {
 	cx, cy := g.dishCenter()
 	scale := g.dishCellScale()
 	p := screenPoint{x: float64(x), y: float64(y)}
+	bestID := -1
+	bestDist := math.MaxFloat64
 	for _, cell := range cells {
 		cellX := cx + cell.Center.X*scale
 		cellY := cy + cell.Center.Y*scale
-		if math.Hypot(p.x-cellX, p.y-cellY) > scale*0.64 {
+		dist := math.Hypot(p.x-cellX, p.y-cellY)
+		if dist > scale*dishCellOverlap {
 			continue
 		}
-		if pointInPolygon(p, dishHexPoints(cellX, cellY, scale*0.52)) {
-			return cell.ID, true
+		if pointInPolygon(p, dishHexPoints(cellX, cellY, scale*dishCellOverlap)) && dist < bestDist {
+			bestID = cell.ID
+			bestDist = dist
 		}
 	}
-	return -1, false
+	return bestID, bestID >= 0
 }
 
 func (g *Game) pickRosterUnit(x, y int) (int, bool) {
@@ -4165,14 +5736,9 @@ func (g *Game) pickRosterUnit(x, y int) (int, bool) {
 }
 
 func (g *Game) pickRunRosterUnit(x, y int) (int, bool) {
-	panelX := 20.0
-	panelY := float64(g.screenHeight) - 156
-	panelW := float64(g.screenWidth) - 40
-	cardW := (panelW - 32) / 3
 	for i := range g.roster {
-		cardX := panelX + 10 + float64(i)*(cardW+6)
-		cardY := panelY + 12
-		if g.pointInRect(float64(x), float64(y), cardX, cardY, cardW, 62) {
+		cardX, cardY, cardW, cardH := g.runRosterCardRect(i)
+		if g.pointInRect(float64(x), float64(y), cardX, cardY, cardW, cardH) {
 			return i, true
 		}
 	}
@@ -4215,6 +5781,10 @@ func (g *Game) enterTactical() {
 	g.tacticalTile = -1
 	g.dishTileID = -1
 	g.dishCells = nil
+	g.dishTickCarry = 0
+	g.dishGeneration = 0
+	g.dishSliderDown = false
+	g.dishSliderTouch = -1
 	g.lastTapTacticalTileID = -1
 	g.tacticalZoom = 1
 	g.tacticalPanX = 0
@@ -4231,6 +5801,11 @@ func (g *Game) enterDish(tileID int) {
 	g.tacticalTile = tileID
 	g.dishTileID = tileID
 	g.dishCells = buildDishCells(g.tacticalID, tileID)
+	g.dishTickCarry = 0
+	g.dishGeneration = 0
+	g.dishTimeScale = dishDefaultTime
+	g.dishSliderDown = false
+	g.dishSliderTouch = -1
 	g.mode = modeDish
 }
 
@@ -4240,13 +5815,40 @@ func (g *Game) enterRun(tileID int) {
 		return
 	}
 	g.tacticalTile = tileID
+	g.resetRunBattle(tileID)
+	g.mode = modeRun
+}
+
+func (g *Game) resetRunBattle(tileID int) {
 	g.runTileID = tileID
 	g.runTurn = 1
+	g.runBroth = [2]int{runStartingBroth, runStartingBroth}
+	if g.perkRand == nil {
+		g.perkRand = rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
+	startTeam := runTeamBlue
+	if g.perkRand.Intn(2) == 1 {
+		startTeam = runTeamRed
+	}
+	secondTeam := opposingRunTeam(startTeam)
+	g.runBroth[secondTeam] += runSecondPlayerBonus
+	g.runActiveTeam = startTeam
+	g.runBaseHP = [2]int{runBaseMaxHP, runBaseMaxHP}
+	g.runUnits = nil
+	g.runWells = defaultRunWells()
+	g.runWalls = nil
+	g.runWallDropFX = nil
+	g.runNextUnitID = 1
+	g.runSelectedUnitID = -1
+	g.runSpawnMode = false
+	g.runAITimer = 0
 	if len(g.roster) == 0 {
 		g.roster = defaultRosterUnits()
 	}
 	g.selectedRosterUnit = clampIntLocal(g.selectedRosterUnit, 0, len(g.roster)-1)
-	g.mode = modeRun
+	g.runBuyPending = false
+	g.runBoughtThisTurn = [2]bool{}
+	g.beginRunTurn(startTeam, fmt.Sprintf("%s starts; %s gets +%d ooze", runTeamLabel(startTeam), runTeamLabel(secondTeam), runSecondPlayerBonus))
 }
 
 func (g *Game) resetTacticalPerkRun() {
@@ -4286,6 +5888,10 @@ func (g *Game) currentDishCells() []dishCell {
 	}
 	if len(g.dishCells) == 0 {
 		g.dishCells = buildDishCells(g.tacticalID, g.dishTileID)
+		g.dishTickCarry = 0
+		g.dishGeneration = 0
+		g.dishSliderDown = false
+		g.dishSliderTouch = -1
 	}
 	return g.dishCells
 }
@@ -4306,19 +5912,413 @@ func buildDishCells(regionID, tileID int) []dishCell {
 			if dist > 7.05 {
 				continue
 			}
-			kind := rng.Intn(4)
+			kind := dishEmpty
+			if q == 0 && r == 0 {
+				kind = dishLife
+			}
 			cells = append(cells, dishCell{
-				ID:     id,
-				Q:      q,
-				R:      r,
-				Center: core.Vec3{X: x, Y: y},
-				Kind:   kind,
-				Phase:  rng.Float64() * math.Pi * 2,
+				ID:        id,
+				Q:         q,
+				R:         r,
+				Center:    core.Vec3{X: x, Y: y},
+				Kind:      kind,
+				MoveDelay: 0,
+				AnimFrom:  core.Vec3{X: x, Y: y},
+				AnimT:     1,
+				Phase:     rng.Float64() * math.Pi * 2,
 			})
 			id++
 		}
 	}
 	return cells
+}
+
+func (g *Game) advanceDishAutomaton(dt float64) {
+	if g.dishTileID < 0 || len(g.currentDishCells()) == 0 {
+		return
+	}
+	if !g.dishRunning() {
+		return
+	}
+	g.dishTickCarry += dt * g.dishTimeScale
+	ticks := 0
+	for g.dishTickCarry >= dishTickSeconds && ticks < 4 {
+		g.dishTickCarry -= dishTickSeconds
+		g.stepDishAutomaton()
+		ticks++
+	}
+	if ticks == 4 {
+		g.dishTickCarry = 0
+	}
+}
+
+func (g *Game) advanceDishCellAnimations(dt float64) {
+	if g.dishTileID < 0 || len(g.currentDishCells()) == 0 {
+		return
+	}
+	for i := range g.dishCells {
+		if g.dishCells[i].AnimT >= 1 {
+			continue
+		}
+		g.dishCells[i].AnimT = math.Min(1, g.dishCells[i].AnimT+dt/dishMoveAnimSeconds)
+	}
+}
+
+func (g *Game) stepDishAutomaton() {
+	cells := g.currentDishCells()
+	if len(cells) == 0 {
+		return
+	}
+	index := buildDishIndex(cells)
+	g.applyDishInteractions(cells, index)
+	g.ageDishCells(cells)
+	g.moveDishCells(cells, index)
+	g.dishGeneration++
+}
+
+func (g *Game) applyDishInteractions(cells []dishCell, index map[[2]int]int) {
+	for i := range cells {
+		if cells[i].Kind != dishZombie {
+			continue
+		}
+		for _, neighbor := range dishNeighborIndexes(cells, index, i) {
+			switch cells[neighbor].Kind {
+			case dishLife:
+				cells[neighbor].Kind = dishSick
+				cells[neighbor].Timer = 0
+				cells[neighbor].Boost = 0
+				cells[neighbor].MoveDelay = dishLifeMoveDelay
+				cells[neighbor].Influence = maxIntLocal(cells[neighbor].Influence, 3)
+			case dishDead:
+				cells[neighbor].Kind = dishEmpty
+				cells[neighbor].Timer = 0
+				cells[neighbor].Boost = 0
+				cells[neighbor].MoveDelay = 0
+				cells[neighbor].Influence = 2
+				cells[i].Boost = maxIntLocal(cells[i].Boost, dishZombieBoostTicks)
+				cells[i].Influence = maxIntLocal(cells[i].Influence, 2)
+			}
+		}
+	}
+}
+
+func (g *Game) ageDishCells(cells []dishCell) {
+	for i := range cells {
+		if cells[i].Influence > 0 {
+			cells[i].Influence--
+		}
+		switch cells[i].Kind {
+		case dishSick:
+			cells[i].Timer++
+			if cells[i].Timer >= dishSickDuration {
+				cells[i].Kind = dishDead
+				cells[i].Timer = 0
+				cells[i].Boost = 0
+				cells[i].MoveDelay = 0
+				cells[i].Influence = maxIntLocal(cells[i].Influence, 3)
+			}
+		case dishDead:
+			cells[i].Timer++
+			if cells[i].Timer >= dishResurrectionTime {
+				cells[i].Kind = dishZombie
+				cells[i].Timer = 0
+				cells[i].Boost = 0
+				cells[i].MoveDelay = dishZombieMoveDelay
+				cells[i].Influence = maxIntLocal(cells[i].Influence, 3)
+			}
+		case dishZombie:
+			if cells[i].Boost > 0 {
+				cells[i].Boost--
+			}
+		case dishEmpty, dishWall:
+			cells[i].Timer = 0
+			cells[i].Boost = 0
+			cells[i].MoveDelay = 0
+		}
+		if dishCellMovable(cells[i].Kind) && cells[i].MoveDelay > 0 {
+			cells[i].MoveDelay--
+		}
+	}
+}
+
+func (g *Game) moveDishCells(cells []dishCell, index map[[2]int]int) {
+	if len(cells) == 0 {
+		return
+	}
+	moved := make(map[int]bool, len(cells))
+	start := g.dishGeneration % len(cells)
+	for step := 0; step < len(cells); step++ {
+		i := (start + step) % len(cells)
+		if moved[i] || !dishCellMovable(cells[i].Kind) || cells[i].MoveDelay > 0 {
+			continue
+		}
+		target, ok := g.dishChooseMove(cells, index, i, moved)
+		if !ok {
+			continue
+		}
+		cells[i].MoveDelay = dishMoveDelay(cells[i].Kind, cells[i].Boost > 0)
+		moveDishOccupant(cells, i, target)
+		moved[i] = true
+		moved[target] = true
+	}
+}
+
+func (g *Game) dishChooseMove(cells []dishCell, index map[[2]int]int, from int, moved map[int]bool) (int, bool) {
+	candidates := dishEmptyNeighborIndexes(cells, index, from, moved)
+	if len(candidates) == 0 {
+		return -1, false
+	}
+	cell := cells[from]
+	seed := g.dishGeneration*37 + cell.ID*17 + cell.Kind*29
+	switch cell.Kind {
+	case dishLife:
+		if threat, ok := dishNearestKind(cells, from, dishZombie, dishLifeVision); ok {
+			if dishAxialDistance(cell, cells[threat]) <= dishPanicDistance {
+				return dishCandidateByDistance(cells, candidates, threat, true, seed)
+			}
+		}
+		if friend, ok := dishNearestKind(cells, from, dishLife, dishLifeVision); ok {
+			currentDist := dishAxialDistance(cell, cells[friend])
+			if currentDist > 1 {
+				if target, ok := dishCandidateByDistance(cells, candidates, friend, false, seed); ok {
+					if dishAxialDistance(cells[target], cells[friend]) < currentDist {
+						return target, true
+					}
+				}
+			}
+		}
+	case dishZombie:
+		if target, ok := dishNearestKind(cells, from, dishLife, dishZombieVision); ok {
+			currentDist := dishAxialDistance(cell, cells[target])
+			if next, ok := dishCandidateByDistance(cells, candidates, target, false, seed); ok {
+				if dishAxialDistance(cells[next], cells[target]) <= currentDist {
+					return next, true
+				}
+			}
+		}
+	}
+	return candidates[absInt(seed)%len(candidates)], true
+}
+
+func buildDishIndex(cells []dishCell) map[[2]int]int {
+	index := make(map[[2]int]int, len(cells))
+	for i, cell := range cells {
+		index[[2]int{cell.Q, cell.R}] = i
+	}
+	return index
+}
+
+func dishNeighborIndexes(cells []dishCell, index map[[2]int]int, id int) []int {
+	neighbors := make([]int, 0, 6)
+	if id < 0 || id >= len(cells) {
+		return neighbors
+	}
+	cell := cells[id]
+	for _, offset := range dishNeighborOffsets {
+		if neighbor, ok := index[[2]int{cell.Q + offset[0], cell.R + offset[1]}]; ok {
+			neighbors = append(neighbors, neighbor)
+		}
+	}
+	return neighbors
+}
+
+func dishEmptyNeighborIndexes(cells []dishCell, index map[[2]int]int, id int, moved map[int]bool) []int {
+	neighbors := dishNeighborIndexes(cells, index, id)
+	empty := make([]int, 0, len(neighbors))
+	for _, neighbor := range neighbors {
+		if moved[neighbor] || cells[neighbor].Kind != dishEmpty {
+			continue
+		}
+		empty = append(empty, neighbor)
+	}
+	return empty
+}
+
+func dishNearestKind(cells []dishCell, from int, kind int, maxDist int) (int, bool) {
+	best := -1
+	bestDist := maxDist + 1
+	for i := range cells {
+		if i == from || cells[i].Kind != kind {
+			continue
+		}
+		dist := dishAxialDistance(cells[from], cells[i])
+		if dist > maxDist {
+			continue
+		}
+		if best < 0 || dist < bestDist || (dist == bestDist && cells[i].ID < cells[best].ID) {
+			best = i
+			bestDist = dist
+		}
+	}
+	return best, best >= 0
+}
+
+func dishCandidateByDistance(cells []dishCell, candidates []int, target int, preferFar bool, seed int) (int, bool) {
+	if len(candidates) == 0 || target < 0 || target >= len(cells) {
+		return -1, false
+	}
+	best := -1
+	bestScore := 0
+	offset := absInt(seed) % len(candidates)
+	for step := 0; step < len(candidates); step++ {
+		candidate := candidates[(offset+step)%len(candidates)]
+		score := dishAxialDistance(cells[candidate], cells[target])
+		if best < 0 || (preferFar && score > bestScore) || (!preferFar && score < bestScore) {
+			best = candidate
+			bestScore = score
+		}
+	}
+	return best, best >= 0
+}
+
+func dishAxialDistance(a, b dishCell) int {
+	dq := absInt(a.Q - b.Q)
+	dr := absInt(a.R - b.R)
+	ds := absInt((-a.Q - a.R) - (-b.Q - b.R))
+	return maxIntLocal(dq, maxIntLocal(dr, ds))
+}
+
+func dishMoveDelay(kind int, boosted bool) int {
+	switch kind {
+	case dishZombie:
+		if boosted {
+			return 1
+		}
+		return dishZombieMoveDelay
+	case dishLife, dishSick:
+		return dishLifeMoveDelay
+	default:
+		return 0
+	}
+}
+
+func dishCellMovable(kind int) bool {
+	return kind == dishLife || kind == dishZombie || kind == dishSick
+}
+
+func moveDishOccupant(cells []dishCell, from, to int) {
+	if from < 0 || from >= len(cells) || to < 0 || to >= len(cells) {
+		return
+	}
+	kind := cells[from].Kind
+	timer := cells[from].Timer
+	boost := cells[from].Boost
+	moveDelay := cells[from].MoveDelay
+	influence := cells[from].Influence
+	cells[to].Kind = kind
+	cells[to].Timer = timer
+	cells[to].Boost = boost
+	cells[to].MoveDelay = moveDelay
+	cells[to].Influence = influence
+	cells[to].AnimFrom = cells[from].Center
+	cells[to].AnimT = 0
+	cells[from].Kind = dishEmpty
+	cells[from].Timer = 0
+	cells[from].Boost = 0
+	cells[from].MoveDelay = 0
+	cells[from].Influence = 0
+	cells[from].AnimFrom = cells[from].Center
+	cells[from].AnimT = 1
+}
+
+func nextDishTapKind(kind int) int {
+	switch kind {
+	case dishEmpty:
+		return dishLife
+	case dishLife:
+		return dishZombie
+	default:
+		return dishEmpty
+	}
+}
+
+func (g *Game) dishCounts() (life, zombie, sick, dead, wall int) {
+	for _, cell := range g.currentDishCells() {
+		switch cell.Kind {
+		case dishLife:
+			life++
+		case dishZombie:
+			zombie++
+		case dishSick:
+			sick++
+		case dishDead:
+			dead++
+		case dishWall:
+			wall++
+		}
+	}
+	return life, zombie, sick, dead, wall
+}
+
+func (g *Game) dishRunning() bool {
+	return g.dishTimeScale > 0.01
+}
+
+func (g *Game) beginDishSliderIfHit(x, y int, touch ebiten.TouchID) bool {
+	sx, sy, sw, sh := g.dishTimeSliderTouchRect()
+	if !g.pointInRect(float64(x), float64(y), sx, sy, sw, sh) {
+		return false
+	}
+	g.dishSliderDown = true
+	g.dishSliderTouch = touch
+	g.setDishTimeFromSliderX(float64(x))
+	return true
+}
+
+func (g *Game) setDishTimeFromSliderX(px float64) {
+	x, _, w, _ := g.dishTimeSliderRect()
+	t := clampRange((px-x)/w, 0, 1)
+	if t < 0.055 {
+		g.dishTimeScale = 0
+		g.dishTickCarry = 0
+		return
+	}
+	g.dishTimeScale = t * dishMaxTime
+}
+
+func (g *Game) dishHudPanelRect() (float64, float64, float64, float64) {
+	return 24, float64(g.screenHeight) - 174, float64(g.screenWidth) - 48, 94
+}
+
+func (g *Game) dishTimeSliderRect() (float64, float64, float64, float64) {
+	x, y, w, _ := g.dishHudPanelRect()
+	return x + 14, y + 66, w - 28, 12
+}
+
+func (g *Game) dishTimeSliderTouchRect() (float64, float64, float64, float64) {
+	x, y, w, h := g.dishTimeSliderRect()
+	return x - 10, y - 20, w + 20, h + 40
+}
+
+func (g *Game) drawDishTimeSlider(screen *ebiten.Image) {
+	x, y, w, h := g.dishTimeSliderRect()
+	label := "TIME PAUSED"
+	if g.dishRunning() {
+		label = fmt.Sprintf("TIME %.1fx", g.dishTimeScale)
+	}
+	ebitenutil.DebugPrintAt(screen, label, int(x), int(y-18))
+	drawRoundedRect(screen, float32(x), float32(y), float32(w), float32(h), 6, color.RGBA{18, 42, 46, 245})
+	progress := clampRange(g.dishTimeScale/dishMaxTime, 0, 1)
+	if progress > 0 {
+		drawRoundedRect(screen, float32(x), float32(y), float32(w*progress), float32(h), 6, color.RGBA{126, 226, 196, 240})
+	}
+	for _, tick := range []float64{0, 1 / dishMaxTime, 2 / dishMaxTime, 1} {
+		tx := x + w*tick
+		vector.StrokeLine(screen, float32(tx), float32(y-3), float32(tx), float32(y+h+3), 1, color.RGBA{184, 232, 222, 145}, false)
+	}
+	thumbX := x + w*progress
+	drawDisc(screen, float32(thumbX), float32(y+h*0.5), 9, color.RGBA{226, 252, 244, 255})
+	vector.StrokeCircle(screen, float32(thumbX), float32(y+h*0.5), 9, 1.5, color.RGBA{66, 116, 112, 255}, false)
+}
+
+func (g *Game) dishOccupantScreenCenter(cell dishCell, cx, cy, scale float64) (float64, float64) {
+	center := cell.Center
+	if cell.AnimT < 1 {
+		t := clampRange(cell.AnimT, 0, 1)
+		t = t * t * (3 - 2*t)
+		center = cell.AnimFrom.Mul(1 - t).Add(cell.Center.Mul(t))
+	}
+	return cx + center.X*scale, cy + center.Y*scale
 }
 
 func (g *Game) dishCenter() (float64, float64) {
@@ -4330,14 +6330,12 @@ func (g *Game) dishRadius() float64 {
 }
 
 func (g *Game) dishCellScale() float64 {
-	return g.dishRadius() / 7.8
+	return g.dishRadius() / dishGridFit
 }
 
 func defaultRosterUnits() []rosterUnit {
 	return []rosterUnit{
-		{Name: "Pip", Role: "Sprout", Trait: "soft shell", HP: 8, Move: 3, Fill: color.RGBA{108, 214, 134, 245}},
-		{Name: "Mote", Role: "Skitter", Trait: "quick cilia", HP: 6, Move: 4, Fill: color.RGBA{116, 210, 206, 245}},
-		{Name: "Luma", Role: "Bloom", Trait: "sporeburst", HP: 7, Move: 3, Fill: color.RGBA{198, 134, 226, 245}},
+		{Name: "White Cell", Role: "Culture", Trait: "cost 1 ooze", HP: runWhiteCellHP, Move: runWhiteCellMove, Fill: dishCellColor(dishLife)},
 	}
 }
 
@@ -4346,7 +6344,7 @@ func (g *Game) runBoardCenter() (float64, float64) {
 }
 
 func (g *Game) runBoardScale() float64 {
-	return math.Min(float64(g.screenWidth), float64(g.screenHeight)) * 0.058
+	return math.Min(float64(g.screenWidth), float64(g.screenHeight)) * 0.066
 }
 
 func runBoardAxialCenter(q, r int) core.Vec3 {
@@ -4676,6 +6674,25 @@ func (g *Game) endTurnButtonRect() (float64, float64, float64, float64) {
 	return float64(g.screenWidth - 124), float64(g.screenHeight - 62), 108, 38
 }
 
+func (g *Game) runRosterCardRect(index int) (float64, float64, float64, float64) {
+	panelX := 20.0
+	panelY := float64(g.screenHeight) - 170
+	panelW := float64(g.screenWidth) - 40
+	count := len(g.roster)
+	if g.runSkipAvailable() {
+		count++
+	}
+	count = maxIntLocal(count, 1)
+	gap := 6.0
+	cardW := (panelW - 20 - gap*float64(count-1)) / float64(count)
+	cardX := panelX + 10 + float64(index)*(cardW+gap)
+	return cardX, panelY + 28, cardW, 56
+}
+
+func (g *Game) runSkipCardRect() (float64, float64, float64, float64) {
+	return g.runRosterCardRect(len(g.roster))
+}
+
 func (g *Game) tacticalSelectionPopupRect() (float64, float64, float64, float64) {
 	buildX, buildY, buildW, _ := g.buildButtonRect()
 	w := 170.0
@@ -4714,29 +6731,37 @@ func dishHexPoints(cx, cy, radius float64) []screenPoint {
 }
 
 func dishCellColor(kind int) color.RGBA {
-	switch kind % 4 {
-	case 0:
-		return color.RGBA{90, 188, 118, 235}
-	case 1:
-		return color.RGBA{112, 206, 186, 235}
-	case 2:
-		return color.RGBA{178, 126, 214, 235}
+	switch kind {
+	case dishLife:
+		return color.RGBA{235, 248, 232, 248}
+	case dishZombie:
+		return color.RGBA{88, 190, 116, 242}
+	case dishSick:
+		return color.RGBA{226, 196, 82, 242}
+	case dishDead:
+		return color.RGBA{156, 84, 94, 232}
+	case dishWall:
+		return color.RGBA{94, 98, 88, 245}
 	default:
-		return color.RGBA{214, 166, 82, 235}
+		return color.RGBA{22, 52, 55, 228}
 	}
 }
 
-func dishInfluenceColor(influence int) color.RGBA {
-	switch influence {
-	case 1:
-		return color.RGBA{134, 238, 134, 255}
-	case 2:
-		return color.RGBA{246, 118, 92, 255}
-	case 3:
-		return color.RGBA{178, 214, 255, 255}
-	default:
-		return color.RGBA{220, 235, 220, 255}
+func dishCellBaseColor(kind int) color.RGBA {
+	if kind == dishWall {
+		return color.RGBA{82, 86, 78, 242}
 	}
+	return color.RGBA{20, 48, 50, 228}
+}
+
+func dishInfluenceColor(influence int) color.RGBA {
+	if influence >= dishPokedInfluence/2 {
+		return color.RGBA{220, 245, 235, 255}
+	}
+	if influence >= 2 {
+		return color.RGBA{134, 238, 160, 255}
+	}
+	return color.RGBA{236, 226, 164, 255}
 }
 
 func itoa(v int) string {
