@@ -5378,9 +5378,9 @@ func (g *Game) drawSettingsBackButton(screen *ebiten.Image) {
 
 func (g *Game) drawSettingsPanel(screen *ebiten.Image) {
 	x := float64(g.screenWidth)*0.5 - 152
-	y := 88.0
+	y := 72.0
 	w := 304.0
-	h := 420.0
+	h := 620.0
 	drawRoundedRect(screen, float32(x), float32(y), float32(w), float32(h), 14, color.RGBA{12, 20, 32, 232})
 	drawRectOutline(screen, float32(x), float32(y), float32(w), float32(h), color.RGBA{126, 176, 210, 255})
 	g.drawAlphaDebugTextBlock(screen, x+18, y+18, []string{
@@ -5391,7 +5391,7 @@ func (g *Game) drawSettingsPanel(screen *ebiten.Image) {
 		"Dev stage jump",
 	}, 1)
 
-	g.drawStageJumpList(screen, x+18, y+72)
+	g.drawStageJumpList(screen, x+18, y+104)
 
 	tx, ty, tw, th := g.creaturesToggleRect()
 	state := "OFF"
@@ -5402,7 +5402,7 @@ func (g *Game) drawSettingsPanel(screen *ebiten.Image) {
 		fill = color.RGBA{28, 72, 46, 236}
 		border = color.RGBA{128, 226, 160, 255}
 	}
-	g.drawAlphaDebugTextBlock(screen, x+18, y+262, []string{
+	g.drawAlphaDebugTextBlock(screen, x+18, y+340, []string{
 		"Tactical creatures",
 		"Disabled by default for quieter playtests.",
 	}, 1)
@@ -5411,7 +5411,7 @@ func (g *Game) drawSettingsPanel(screen *ebiten.Image) {
 	ebitenutil.DebugPrintAt(screen, "CREATURES "+state, int(tx)+18, int(ty)+12)
 
 	rx, ry, rw, rh := g.regenerateButtonRect()
-	g.drawAlphaDebugTextBlock(screen, x+18, y+332, []string{
+	g.drawAlphaDebugTextBlock(screen, x+18, y+430, []string{
 		"Regenerate the world and clear tactical state.",
 	}, 1)
 	drawRoundedRect(screen, float32(rx), float32(ry), float32(rw), float32(rh), 12, color.RGBA{124, 58, 48, 236})
@@ -5792,7 +5792,7 @@ func (g *Game) drawStageJumpList(screen *ebiten.Image, x, y float64) {
 
 func (g *Game) stageJumpButtonRect(index int) (float64, float64, float64, float64) {
 	x := float64(g.screenWidth)*0.5 - 134
-	y := 184.0 + float64(index)*42
+	y := 204.0 + float64(index)*42
 	return x, y, 268, 34
 }
 
@@ -6101,11 +6101,11 @@ func (g *Game) techButtonRect() (float64, float64, float64, float64) {
 }
 
 func (g *Game) creaturesToggleRect() (float64, float64, float64, float64) {
-	return float64(g.screenWidth)*0.5 - 92, 390, 184, 42
+	return float64(g.screenWidth)*0.5 - 92, 456, 184, 42
 }
 
 func (g *Game) regenerateButtonRect() (float64, float64, float64, float64) {
-	return float64(g.screenWidth)*0.5 - 92, 452, 184, 46
+	return float64(g.screenWidth)*0.5 - 92, 540, 184, 46
 }
 
 func resourceLabel(resource core.ResourceType) string {

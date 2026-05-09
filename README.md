@@ -20,6 +20,20 @@ Android scaffold:
 
 The intended Java package for the generated mobile bindings is `com.quartermeat.petridish`.
 
+## Windows Desktop Run
+
+Run the native desktop build from the repo root:
+
+```powershell
+python scripts\run_windows.py
+```
+
+For a quick settings-screen smoke test:
+
+```powershell
+python scripts\run_windows.py --view settings --screenshot debug\log\settings.png
+```
+
 ## Android Build From Windows
 
 Run these from the repo root:
