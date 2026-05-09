@@ -13,11 +13,29 @@ The default ruleset is a biome demo intended to match the blue/green petri-dish 
 Android scaffold:
 
 - `android/`: minimal Android wrapper app that hosts the Ebiten-generated `EbitenView`
-- `scripts/build_apk_wsl.sh`: binds `./mobile` into an AAR and builds a debug APK
-- `scripts/build_and_install_from_wsl.sh`: one-shot WSL command to build, install, and launch on a connected phone
-- `scripts/install_apk_windows_from_wsl.sh`: install helper reused by the one-shot script
+- `scripts/build_apk.py`: Windows-friendly Python entrypoint that builds the debug APK through the WSL-hosted Android toolchain
+- `scripts/install_apk.py`: installs and launches the debug APK with `adb`
+- `scripts/build_and_install.py`: one-shot Python command to build, install, launch, and log a connected phone run
+- `scripts/*_wsl.sh`: older WSL-native fallbacks kept for direct shell use
 
 The intended Java package for the generated mobile bindings is `com.quartermeat.petridish`.
+
+## Android Build From Windows
+
+Run these from the repo root:
+
+```powershell
+python scripts\build_apk.py
+python scripts\install_apk.py
+```
+
+For the full loop:
+
+```powershell
+python scripts\build_and_install.py
+```
+
+`build_apk.py` expects WSL to have the existing local Go/Java/Ebiten toolchain at `REWIND_ROOT`, defaulting to `/home/jerem/work/rewind/CODEX_rewind`. Override `REWIND_ROOT`, `EBITEN_SOURCE_ROOT`, `GOMODCACHE`, `ADB_EXE`, or `ANDROID_HOME` if this machine has a different layout.
 
 ## Current Testing Cheat Sheet
 

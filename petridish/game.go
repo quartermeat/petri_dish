@@ -25,7 +25,10 @@ import (
 	"petri_dish/core"
 )
 
-const autoSaveInterval = 180.0
+const (
+	projectName      = "Petri Dish"
+	autoSaveInterval = 180.0
+)
 
 const (
 	defaultScreenWidth  = 432
@@ -5382,7 +5385,7 @@ func (g *Game) drawSettingsPanel(screen *ebiten.Image) {
 	drawRectOutline(screen, float32(x), float32(y), float32(w), float32(h), color.RGBA{126, 176, 210, 255})
 	g.drawAlphaDebugTextBlock(screen, x+18, y+18, []string{
 		"SETTINGS",
-		"Petri Dish",
+		"Project " + projectName,
 		"Build " + g.displayVersion(),
 		"World controls",
 		"Dev stage jump",
