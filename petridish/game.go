@@ -59,6 +59,7 @@ const (
 	modeTech
 	modeSettings
 	modeDish
+	modeRun
 	modeSmelterConfig
 	modeAssemblerConfig
 	modeGeneratorConfig
@@ -103,6 +104,10 @@ type Game struct {
 	currentStageID        string
 	dishTileID            int
 	dishCells             []dishCell
+	roster                []rosterUnit
+	selectedRosterUnit    int
+	runTileID             int
+	runTurn               int
 	settingsDown          bool
 	settingsX             int
 	settingsY             int
@@ -178,6 +183,15 @@ type dishCell struct {
 	Kind      int
 	Influence int
 	Phase     float64
+}
+
+type rosterUnit struct {
+	Name  string
+	Role  string
+	Trait string
+	HP    int
+	Move  int
+	Fill  color.RGBA
 }
 
 type mugMoveState struct {
@@ -300,6 +314,10 @@ func NewGame() *Game {
 		lastTapCellID:         -1,
 		lastTapTacticalTileID: -1,
 		dishTileID:            -1,
+		roster:                defaultRosterUnits(),
+		selectedRosterUnit:    0,
+		runTileID:             -1,
+		runTurn:               1,
 		configTileID:          -1,
 		mugMoves:              map[int]*mugMoveState{},
 		fieldDataScanCarry:    map[fieldDataTileKey]float64{},
@@ -322,6 +340,8 @@ func (g *Game) installFreshWorld(seed int64) {
 	g.tacticalTile = -1
 	g.dishTileID = -1
 	g.dishCells = nil
+	g.runTileID = -1
+	g.runTurn = 1
 	g.tacticalZoom = 1
 	g.tacticalPanX = 0
 	g.tacticalPanY = 0
@@ -334,8 +354,8 @@ func (g *Game) installFreshWorld(seed int64) {
 	g.pinchTouchB = -1
 	g.inventory = map[core.ResourceType]int{}
 	g.partInventory = map[core.DevicePart]int{}
-	g.starterMinerCount = 1
-	g.starterGateCount = 1
+	g.starterMinerCount = 0
+	g.starterGateCount = 0
 	g.starterMinerPlaced = 0
 	g.starterMinerRecovered = 0
 	g.minedTotals = map[core.ResourceType]int{}
@@ -361,6 +381,10 @@ func (g *Game) installFreshWorld(seed int64) {
 	g.mugDragTargetTile = -1
 	g.mugMoves = map[int]*mugMoveState{}
 	g.lastTapTacticalTileID = -1
+	if len(g.roster) == 0 {
+		g.roster = defaultRosterUnits()
+	}
+	g.selectedRosterUnit = clampIntLocal(g.selectedRosterUnit, 0, len(g.roster)-1)
 	g.fieldDataPopups = nil
 	g.fieldDataScanCarry = map[fieldDataTileKey]float64{}
 	g.uplinkPackets = nil
@@ -368,6 +392,48 @@ func (g *Game) installFreshWorld(seed int64) {
 	g.gateUplinkUnlocked = false
 	if g.perks == nil {
 		g.perks = core.DefaultPerkBook()
+	}
+}
+
+func (g *Game) stripEconomyState() {
+	g.inventory = map[core.ResourceType]int{}
+	g.partInventory = map[core.DevicePart]int{}
+	g.starterMinerCount = 0
+	g.starterGateCount = 0
+	g.starterMinerPlaced = 0
+	g.starterMinerRecovered = 0
+	g.minedTotals = map[core.ResourceType]int{}
+	g.knownRecipes = map[string]bool{}
+	if g.progression != nil {
+		g.currentStageID = g.progression.StartStageID
+	}
+	g.activePerks = nil
+	g.stagePowerSpent = map[string]float64{}
+	g.perksAwarded = map[string]int{}
+	g.perkChoice = nil
+	g.perkOfferCooldown = 0
+	g.fieldDataPopups = nil
+	g.fieldDataScanCarry = map[fieldDataTileKey]float64{}
+	g.uplinkPackets = nil
+	g.gateUplinkUnlocked = false
+	for _, tmap := range g.tacticalMaps {
+		stripFactoryState(tmap)
+	}
+}
+
+func stripFactoryState(tmap *core.TacticalMap) {
+	if tmap == nil {
+		return
+	}
+	tmap.Supply = map[core.ResourceType]int{}
+	for i := range tmap.Tiles {
+		tile := &tmap.Tiles[i]
+		tile.Resource = core.ResourceNone
+		tile.ResourceRichness = 0
+		tile.ResourceRemaining = 0
+		tile.ResourceCarry = 0
+		tile.PowerBuffer = 0
+		tile.Device = nil
 	}
 }
 
@@ -505,12 +571,14 @@ func (g *Game) applySave(data *core.SaveData) {
 	g.fieldDataScanCarry = map[fieldDataTileKey]float64{}
 	g.uplinkPackets = nil
 	g.creaturesEnabled = data.CreaturesEnabled
-	g.gateUplinkUnlocked = data.GateUplinkUnlocked
+	g.gateUplinkUnlocked = false
+	g.stripEconomyState()
 	for _, entry := range data.Tactical {
 		if entry.Map == nil {
 			continue
 		}
 		entry.Map.Rehydrate()
+		stripFactoryState(entry.Map)
 		g.tacticalMaps[entry.CellID] = entry.Map
 	}
 }
@@ -721,7 +789,7 @@ func (g *Game) requestReset() {
 func (g *Game) requestRegen() {
 	g.showModal([]string{
 		"Regenerate the world.",
-		"Resources and devices will be lost.",
+		"Prototype progress will be reset.",
 	}, func() {
 		g.wipeAndRestart(time.Now().UnixNano())
 	})
@@ -745,6 +813,13 @@ func (g *Game) OpenDishForTesting() {
 	g.OpenTacticalForTesting()
 	if tmap := g.currentTacticalMap(); tmap != nil && len(tmap.Tiles) > 0 {
 		g.enterDish(g.tacticalTile)
+	}
+}
+
+func (g *Game) OpenRunForTesting() {
+	g.OpenTacticalForTesting()
+	if tmap := g.currentTacticalMap(); tmap != nil && len(tmap.Tiles) > 0 {
+		g.enterRun(g.tacticalTile)
 	}
 }
 
@@ -851,20 +926,6 @@ func (g *Game) saveOverlayStatus() (string, float64) {
 }
 
 func (g *Game) triggerTutorials() {
-	stage := g.currentStage()
-	if stage.ID != "bootstrap" {
-		return
-	}
-	if g.minedTotals[core.ResourceIronOre] <= 0 &&
-		g.minedTotals[core.ResourceCopperOre] <= 0 &&
-		g.minedTotals[core.ResourceCoal] <= 0 &&
-		g.minedTotals[core.ResourceCrystal] <= 0 {
-		return
-	}
-	g.showTutorialOnce("bootstrap_stone_plain_tile", []string{
-		"Stone has no ore marker.",
-		"Mine a plain tile to collect stone.",
-	})
 }
 
 func (g *Game) ConfigureScreenshot(path string, frames int) {
@@ -881,22 +942,11 @@ func (g *Game) Update() error {
 	}
 	dt := 1.0 / 60.0
 	g.animationTime += dt
-	g.advanceFieldDataPopups(dt)
-	g.advanceUplinkPackets(dt)
-	if g.tacticalPerkSystemActive() {
-		g.advancePerkOfferCooldown(dt)
-		g.advancePerkCelebration(dt)
+	if g.screenshotPath != "" && g.screenshotFrames > 0 {
+		g.screenshotFrames--
 	}
 	if g.modalActive() {
 		g.handleModalInput()
-		return nil
-	}
-	if g.perkChoiceActive() {
-		g.handlePerkChoiceInput()
-		return nil
-	}
-	if g.inventoryOverlayActive() {
-		g.handleInventoryOverlayInput()
 		return nil
 	}
 	if g.saveOverlayActive {
@@ -910,34 +960,9 @@ func (g *Game) Update() error {
 		g.handleTutorialInput()
 		return nil
 	}
-	mods := g.productionMods()
-	for _, tmap := range g.tacticalMaps {
-		before := fieldDataMiningSnapshot(tmap)
-		tmap.Produce(dt, g.inventory, g.minedTotals, mods)
-		g.collectFieldDataFromMining(tmap, before)
-	}
-	g.advanceTacticalDeviceMotion(dt)
-	if mods.ProductivePower != nil && *mods.ProductivePower > 0 {
-		g.recordProductivePower(*mods.ProductivePower)
-	}
-	g.advanceProgression()
-	g.triggerTutorials()
-	if g.screenshotPath != "" && g.screenshotFrames > 0 {
-		g.screenshotFrames--
-	}
 	g.autoSaveTimer += dt
 	if g.autoSaveTimer >= autoSaveInterval {
 		g.beginSaveOverlay()
-		return nil
-	}
-	if g.mode == modeBuild {
-		g.handleBuildInput()
-		g.ruleset.Update(g.globe, dt)
-		return nil
-	}
-	if g.mode == modeTech {
-		g.handleTechInput()
-		g.ruleset.Update(g.globe, dt)
 		return nil
 	}
 	if g.mode == modeSettings {
@@ -950,18 +975,8 @@ func (g *Game) Update() error {
 		g.ruleset.Update(g.globe, dt)
 		return nil
 	}
-	if g.mode == modeSmelterConfig {
-		g.handleSmelterConfigInput()
-		g.ruleset.Update(g.globe, dt)
-		return nil
-	}
-	if g.mode == modeAssemblerConfig {
-		g.handleAssemblerConfigInput()
-		g.ruleset.Update(g.globe, dt)
-		return nil
-	}
-	if g.mode == modeGeneratorConfig {
-		g.handleGeneratorConfigInput()
+	if g.mode == modeRun {
+		g.handleRunInput()
 		g.ruleset.Update(g.globe, dt)
 		return nil
 	}
@@ -979,32 +994,9 @@ func (g *Game) Update() error {
 }
 
 func (g *Game) Draw(screen *ebiten.Image) {
-	if g.mode == modeBuild {
-		g.drawBuildView(screen)
-		g.drawModal(screen)
-		g.drawPerkChoice(screen)
-		g.drawInventoryOverlay(screen)
-		g.drawTutorial(screen)
-		g.drawSaveOverlay(screen)
-		g.captureScreenshotIfReady(screen)
-		return
-	}
-	if g.mode == modeTech {
-		g.drawTechView(screen)
-		g.drawModal(screen)
-		g.drawPerkChoice(screen)
-		g.drawInventoryOverlay(screen)
-		g.drawTutorial(screen)
-		g.drawSaveOverlay(screen)
-		g.captureScreenshotIfReady(screen)
-		return
-	}
 	if g.mode == modeSettings {
 		g.drawSettings(screen)
 		g.drawModal(screen)
-		g.drawPerkChoice(screen)
-		g.drawInventoryOverlay(screen)
-		g.drawTutorial(screen)
 		g.drawSaveOverlay(screen)
 		g.captureScreenshotIfReady(screen)
 		return
@@ -1012,39 +1004,13 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	if g.mode == modeDish {
 		g.drawDish(screen)
 		g.drawModal(screen)
-		g.drawPerkChoice(screen)
-		g.drawInventoryOverlay(screen)
-		g.drawTutorial(screen)
 		g.drawSaveOverlay(screen)
 		g.captureScreenshotIfReady(screen)
 		return
 	}
-	if g.mode == modeSmelterConfig {
-		g.drawSmelterConfig(screen)
+	if g.mode == modeRun {
+		g.drawRun(screen)
 		g.drawModal(screen)
-		g.drawPerkChoice(screen)
-		g.drawInventoryOverlay(screen)
-		g.drawTutorial(screen)
-		g.drawSaveOverlay(screen)
-		g.captureScreenshotIfReady(screen)
-		return
-	}
-	if g.mode == modeAssemblerConfig {
-		g.drawAssemblerConfig(screen)
-		g.drawModal(screen)
-		g.drawPerkChoice(screen)
-		g.drawInventoryOverlay(screen)
-		g.drawTutorial(screen)
-		g.drawSaveOverlay(screen)
-		g.captureScreenshotIfReady(screen)
-		return
-	}
-	if g.mode == modeGeneratorConfig {
-		g.drawGeneratorConfig(screen)
-		g.drawModal(screen)
-		g.drawPerkChoice(screen)
-		g.drawInventoryOverlay(screen)
-		g.drawTutorial(screen)
 		g.drawSaveOverlay(screen)
 		g.captureScreenshotIfReady(screen)
 		return
@@ -1052,9 +1018,6 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	if g.mode == modeTactical {
 		g.drawTactical(screen)
 		g.drawModal(screen)
-		g.drawPerkChoice(screen)
-		g.drawInventoryOverlay(screen)
-		g.drawTutorial(screen)
 		g.drawSaveOverlay(screen)
 		g.captureScreenshotIfReady(screen)
 		return
@@ -1064,21 +1027,8 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	g.drawGlobe(screen)
 	g.drawMinimap(screen)
 	g.drawStrategicSettingsButton(screen)
-	g.drawStrategicTechButton(screen)
 	g.drawStrategicStats(screen)
-	g.drawStrategicStageGoals(screen)
-	g.drawInventoryCard(screen, 16, 16, 1)
-	if g.strategicDeviceCount(core.DeviceKindMiner)+g.strategicDeviceCount(core.DeviceKindSmelter)+g.strategicDeviceCount(core.DeviceKindGate)+g.strategicDeviceCount(core.DeviceKindGenerator)+g.strategicDeviceCount(core.DeviceKindAssembler) > 0 {
-		techX, techY, techW, _ := g.techButtonRect()
-		deviceH := g.strategicDevicesCardHeight()
-		deviceX := techX + techW - 170
-		deviceY := techY - 12 - deviceH
-		g.drawStrategicDevicesCard(screen, deviceX, deviceY, 1)
-	}
 	g.drawModal(screen)
-	g.drawPerkChoice(screen)
-	g.drawInventoryOverlay(screen)
-	g.drawTutorial(screen)
 	g.drawSaveOverlay(screen)
 	g.captureScreenshotIfReady(screen)
 }
@@ -1205,7 +1155,6 @@ func (g *Game) handleTacticalInput() {
 	if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) {
 		x, y := ebiten.CursorPosition()
 		g.beginDrag(-1, x, y)
-		g.beginTacticalMUGDrag(x, y)
 	}
 	if inpututil.IsMouseButtonJustReleased(ebiten.MouseButtonLeft) && g.dragTouchID == -1 {
 		x, y := ebiten.CursorPosition()
@@ -1218,7 +1167,6 @@ func (g *Game) handleTacticalInput() {
 		if len(justTouched) > 0 {
 			x, y := ebiten.TouchPosition(justTouched[0])
 			g.beginDrag(justTouched[0], x, y)
-			g.beginTacticalMUGDrag(x, y)
 		}
 	}
 
@@ -1229,7 +1177,6 @@ func (g *Game) handleTacticalInput() {
 			if id == g.dragTouchID {
 				active = true
 				x, y := ebiten.TouchPosition(id)
-				g.tryHoldPowerStarterMiner(x, y)
 				g.applyTacticalDrag(x, y)
 				break
 			}
@@ -1245,7 +1192,6 @@ func (g *Game) handleTacticalInput() {
 
 	if g.dragging {
 		x, y := ebiten.CursorPosition()
-		g.tryHoldPowerStarterMiner(x, y)
 		g.applyTacticalDrag(x, y)
 	}
 }
@@ -1278,6 +1224,34 @@ func (g *Game) handleDishTap(x, y int) {
 	}
 }
 
+func (g *Game) handleRunInput() {
+	if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) {
+		x, y := ebiten.CursorPosition()
+		g.handleRunTap(x, y)
+	}
+	justTouched := inpututil.AppendJustPressedTouchIDs(nil)
+	if len(justTouched) > 0 {
+		x, y := ebiten.TouchPosition(justTouched[0])
+		g.handleRunTap(x, y)
+	}
+}
+
+func (g *Game) handleRunTap(x, y int) {
+	backX, backY, backW, backH := g.backButtonRect()
+	if g.pointInRect(float64(x), float64(y), backX, backY, backW, backH) {
+		g.mode = modeTactical
+		return
+	}
+	endX, endY, endW, endH := g.endTurnButtonRect()
+	if g.pointInRect(float64(x), float64(y), endX, endY, endW, endH) {
+		g.runTurn++
+		return
+	}
+	if unitID, ok := g.pickRunRosterUnit(x, y); ok {
+		g.selectedRosterUnit = unitID
+	}
+}
+
 func (g *Game) beginDrag(touchID ebiten.TouchID, x, y int) {
 	g.dragging = true
 	g.dragTouchID = touchID
@@ -1292,14 +1266,6 @@ const doubleTapWindow = 900 * time.Millisecond
 
 func (g *Game) finishSelection(x, y int) {
 	if g.dragMoved {
-		return
-	}
-	if g.handleInventoryButtonTap(x, y) {
-		return
-	}
-	techX, techY, techW, techH := g.techButtonRect()
-	if g.pointInRect(float64(x), float64(y), techX, techY, techW, techH) {
-		g.mode = modeTech
 		return
 	}
 	settingsX, settingsY, settingsW, settingsH := g.settingsButtonRect()
@@ -1434,7 +1400,6 @@ func (g *Game) drawGlobe(screen *ebiten.Image) {
 		drawPolygonStroke(screen, points, core.ScaleColor(cell.style.Edge, 0.85+cell.style.Highlight))
 	}
 	g.drawStrategicMagnifierHint(screen, cells)
-	g.drawStrategicDeviceBadges(screen, cells)
 }
 
 func (g *Game) drawStrategicMagnifierHint(screen *ebiten.Image, cells []drawCell) {
@@ -1604,16 +1569,6 @@ func (g *Game) tacticalSelectionLines(tile *core.TacticalTile) []string {
 		lines = append(lines, "terrain ocean")
 	} else {
 		lines = append(lines, "terrain land")
-	}
-	if tile.Resource != core.ResourceNone && tile.ResourceRemaining > 0 {
-		lines = append(lines, fmt.Sprintf("%s %.0f%%", resourceLabel(tile.Resource), tile.ResourceRichness*100))
-	} else {
-		lines = append(lines, "resource none")
-	}
-	if tile.Device != nil && tile.Device.Kind != core.DeviceKindNone {
-		lines = append(lines, "device "+core.DeviceKindLabel(tile.Device.Kind))
-	} else {
-		lines = append(lines, "device none")
 	}
 	lines = append(lines, "double tap: dish")
 	return lines
@@ -2084,18 +2039,10 @@ func (g *Game) drawTactical(screen *ebiten.Image) {
 	screen.Fill(color.RGBA{10, 15, 24, 255})
 	g.drawBackdrop(screen)
 	g.drawTacticalMap(screen)
-	g.drawFieldDataPopups(screen)
-	g.drawUplinkPackets(screen)
-	g.drawTacticalStageGoals(screen)
 	g.drawTacticalBackButton(screen)
-	g.drawTacticalDepositButton(screen)
-	g.drawTacticalDisassembleButton(screen)
-	g.drawTacticalPlaceBuildButton(screen)
-	g.drawTacticalBuildButton(screen)
-	g.drawInventoryCard(screen, 16, 16, 1)
-	g.drawTacticalHudMeters(screen)
+	g.drawTacticalRosterPanel(screen)
+	g.drawDeployRunButton(screen)
 	g.drawTacticalSelectionPopup(screen)
-	g.drawPendingBuildCard(screen)
 }
 
 func (g *Game) drawDish(screen *ebiten.Image) {
@@ -2184,6 +2131,136 @@ func (g *Game) drawTacticalHudMeters(screen *ebiten.Image) {
 	}
 }
 
+func (g *Game) drawTacticalRosterPanel(screen *ebiten.Image) {
+	x, y, w, h := g.tacticalRosterPanelRect()
+	drawRoundedRect(screen, float32(x), float32(y), float32(w), float32(h), 8, color.RGBA{7, 18, 28, 222})
+	drawRectOutline(screen, float32(x), float32(y), float32(w), float32(h), color.RGBA{122, 196, 210, 220})
+	g.drawAlphaDebugTextBlock(screen, x+10, y+10, []string{"ROSTER"}, 1)
+	for i, unit := range g.roster {
+		rowX, rowY, rowW, rowH := g.rosterRowRect(i)
+		fill := color.RGBA{18, 36, 48, 224}
+		border := color.RGBA{72, 116, 132, 210}
+		if i == g.selectedRosterUnit {
+			fill = color.RGBA{28, 70, 72, 236}
+			border = color.RGBA{132, 238, 214, 240}
+		}
+		drawRoundedRect(screen, float32(rowX), float32(rowY), float32(rowW), float32(rowH), 6, fill)
+		drawRectOutline(screen, float32(rowX), float32(rowY), float32(rowW), float32(rowH), border)
+		drawDisc(screen, float32(rowX+15), float32(rowY+rowH*0.5), 7, unit.Fill)
+		ebitenutil.DebugPrintAt(screen, unit.Name, int(rowX)+28, int(rowY)+4)
+		ebitenutil.DebugPrintAt(screen, fmt.Sprintf("hp %d mv %d", unit.HP, unit.Move), int(rowX)+28, int(rowY)+18)
+	}
+}
+
+func (g *Game) drawDeployRunButton(screen *ebiten.Image) {
+	x, y, w, h := g.deployButtonRect()
+	enabled := g.tacticalTile >= 0
+	fill := color.RGBA{44, 58, 72, 230}
+	border := color.RGBA{112, 132, 154, 230}
+	label := "PICK TILE"
+	if enabled {
+		fill = color.RGBA{44, 114, 80, 238}
+		border = color.RGBA{132, 238, 174, 250}
+		label = "DEPLOY"
+	}
+	drawRoundedRect(screen, float32(x), float32(y), float32(w), float32(h), 9, fill)
+	drawRectOutline(screen, float32(x), float32(y), float32(w), float32(h), border)
+	ebitenutil.DebugPrintAt(screen, label, int(x)+20, int(y)+12)
+}
+
+func (g *Game) drawRun(screen *ebiten.Image) {
+	screen.Fill(color.RGBA{7, 10, 18, 255})
+	g.drawBackdrop(screen)
+	g.drawRunBoard(screen)
+	g.drawArrowBackButton(screen)
+	g.drawRunHud(screen)
+	g.drawRunRoster(screen)
+}
+
+func (g *Game) drawRunBoard(screen *ebiten.Image) {
+	cx, cy := g.runBoardCenter()
+	scale := g.runBoardScale()
+	for q := -3; q <= 3; q++ {
+		rMin := maxIntLocal(-3, -q-3)
+		rMax := minIntLocal(3, -q+3)
+		for r := rMin; r <= rMax; r++ {
+			center := runBoardAxialCenter(q, r)
+			points := tacticalHexPoints(center, scale)
+			verts := make([]ebiten.Vertex, 0, len(points))
+			for _, p := range points {
+				verts = append(verts, ebiten.Vertex{DstX: float32(cx + p.x), DstY: float32(cy + p.y), SrcX: 0, SrcY: 0})
+			}
+			fill := color.RGBA{24, 48, 54, 232}
+			if (q+r)&1 == 0 {
+				fill = color.RGBA{30, 58, 62, 232}
+			}
+			drawFilledPolygon(screen, verts, fill)
+			drawPolygonStroke(screen, verts, color.RGBA{84, 132, 138, 210})
+		}
+	}
+	for i, unit := range g.roster {
+		q := -2
+		r := i - 1
+		center := runBoardAxialCenter(q, r)
+		x := cx + center.X*scale
+		y := cy + center.Y*scale
+		drawDisc(screen, float32(x+3), float32(y+5), float32(scale*0.24), color.RGBA{0, 0, 0, 80})
+		drawDisc(screen, float32(x), float32(y), float32(scale*0.23), unit.Fill)
+		if i == g.selectedRosterUnit {
+			vector.StrokeCircle(screen, float32(x), float32(y), float32(scale*0.32), 2, color.RGBA{238, 252, 214, 240}, false)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		center := runBoardAxialCenter(2, i-1)
+		x := cx + center.X*scale
+		y := cy + center.Y*scale
+		drawDisc(screen, float32(x+3), float32(y+5), float32(scale*0.22), color.RGBA{0, 0, 0, 80})
+		drawDisc(screen, float32(x), float32(y), float32(scale*0.21), color.RGBA{184, 72, 86, 235})
+		drawDisc(screen, float32(x-scale*0.05), float32(y-scale*0.05), float32(scale*0.055), color.RGBA{250, 198, 188, 230})
+	}
+}
+
+func (g *Game) drawRunHud(screen *ebiten.Image) {
+	title := "TACTICAL RUN"
+	if g.runTileID >= 0 {
+		title = fmt.Sprintf("TACTICAL RUN %d", g.runTileID)
+	}
+	g.drawAlphaDebugTextBlock(screen, 24, 22, []string{
+		title,
+		fmt.Sprintf("turn %d", g.runTurn),
+		"prototype sortie",
+	}, 1)
+	x, y, w, h := g.endTurnButtonRect()
+	drawRoundedRect(screen, float32(x), float32(y), float32(w), float32(h), 9, color.RGBA{62, 76, 94, 232})
+	drawRectOutline(screen, float32(x), float32(y), float32(w), float32(h), color.RGBA{188, 214, 238, 245})
+	ebitenutil.DebugPrintAt(screen, "END TURN", int(x)+14, int(y)+12)
+}
+
+func (g *Game) drawRunRoster(screen *ebiten.Image) {
+	x := 20.0
+	y := float64(g.screenHeight) - 156
+	w := float64(g.screenWidth) - 40
+	h := 86.0
+	drawRoundedRect(screen, float32(x), float32(y), float32(w), float32(h), 8, color.RGBA{8, 18, 28, 224})
+	drawRectOutline(screen, float32(x), float32(y), float32(w), float32(h), color.RGBA{122, 196, 210, 220})
+	for i, unit := range g.roster {
+		cardW := (w - 32) / 3
+		cardX := x + 10 + float64(i)*(cardW+6)
+		cardY := y + 12
+		fill := color.RGBA{18, 34, 46, 232}
+		border := color.RGBA{80, 118, 136, 220}
+		if i == g.selectedRosterUnit {
+			fill = color.RGBA{28, 70, 72, 238}
+			border = color.RGBA{132, 238, 214, 245}
+		}
+		drawRoundedRect(screen, float32(cardX), float32(cardY), float32(cardW), 62, 6, fill)
+		drawRectOutline(screen, float32(cardX), float32(cardY), float32(cardW), 62, border)
+		drawDisc(screen, float32(cardX+16), float32(cardY+18), 7, unit.Fill)
+		ebitenutil.DebugPrintAt(screen, unit.Name, int(cardX)+28, int(cardY)+8)
+		ebitenutil.DebugPrintAt(screen, unit.Trait, int(cardX)+8, int(cardY)+34)
+	}
+}
+
 func (g *Game) drawTacticalMap(screen *ebiten.Image) {
 	tmap := g.currentTacticalMap()
 	if tmap == nil {
@@ -2191,18 +2268,11 @@ func (g *Game) drawTacticalMap(screen *ebiten.Image) {
 	}
 	cx, cy := g.tacticalCenter()
 	scale := g.tacticalTileScale()
-	generatorPowerHighlight := g.selectedGeneratorPowerHighlight(tmap)
 	for _, tile := range tmap.Tiles {
 		points := tacticalHexPoints(tile.Center, scale)
 		fill := tile.Fill
-		if clr, ok := generatorPowerHighlight[tile.ID]; ok {
-			fill = core.BlendColor(fill, clr, 0.46)
-		}
 		if tile.ID == g.tacticalTile {
 			fill = core.BlendColor(fill, color.RGBA{246, 249, 255, 255}, 0.33)
-		}
-		if g.pendingBuildRecipeID != "" && g.canPlacePendingBuildOnTile(tile.ID) {
-			fill = core.BlendColor(fill, color.RGBA{128, 226, 160, 255}, 0.26)
 		}
 		fill = core.ScaleColor(fill, 0.92+tile.Elevation*0.18)
 		vertices := make([]ebiten.Vertex, 0, len(points))
@@ -2217,30 +2287,14 @@ func (g *Game) drawTacticalMap(screen *ebiten.Image) {
 		drawFilledPolygon(screen, vertices, fill)
 		g.drawTacticalTileTexture(screen, &tile, vertices, points, scale)
 		edge := core.ScaleColor(fill, 0.72)
-		if clr, ok := generatorPowerHighlight[tile.ID]; ok {
-			edge = clr
-		}
 		if tile.ID == g.tacticalTile {
 			edge = core.BlendColor(edge, color.RGBA{185, 239, 255, 255}, 0.45)
 		}
-		if g.pendingBuildRecipeID != "" && g.canPlacePendingBuildOnTile(tile.ID) {
-			edge = color.RGBA{128, 226, 160, 255}
-		}
 		drawPolygonStroke(screen, vertices, edge)
-	}
-	for i := range tmap.Tiles {
-		tile := &tmap.Tiles[i]
-		g.drawTacticalTileResourceGlyph(screen, tile, cx, cy, scale)
-	}
-	for i := range tmap.Tiles {
-		tile := &tmap.Tiles[i]
-		g.drawTacticalTileDevice(screen, tmap, tile, cx, cy, scale)
 	}
 	if g.creaturesEnabled {
 		g.drawTacticalEntities(screen, tmap, cx, cy, scale)
 	}
-	g.drawMUGDragPath(screen, tmap, cx, cy, scale)
-	g.drawTacticalTileIndicators(screen, tmap, cx, cy, scale)
 }
 
 func (g *Game) drawTacticalTileTexture(screen *ebiten.Image, tile *core.TacticalTile, vertices []ebiten.Vertex, localPoints []screenPoint, scale float64) {
@@ -3711,73 +3765,23 @@ func (g *Game) drawTacticalPlaceBuildButton(screen *ebiten.Image) {
 }
 
 func (g *Game) finishTacticalPointer(x, y int) {
-	if g.mugDragActive {
-		g.finishTacticalMUGDrag(x, y)
-		return
-	}
 	if g.dragMoved {
-		return
-	}
-	if g.handleInventoryButtonTap(x, y) {
 		return
 	}
 	buttonX, buttonY, buttonW, buttonH := g.backButtonRect()
 	if g.pointInRect(float64(x), float64(y), buttonX, buttonY, buttonW, buttonH) {
-		if g.pendingBuildRecipeID != "" {
-			g.pendingBuildRecipeID = ""
-			return
-		}
-		g.shutdownTacticalPerkSystem()
 		g.mode = modeStrategic
 		return
 	}
-	depositX, depositY, depositW, depositH := g.depositButtonRect()
-	if g.pointInRect(float64(x), float64(y), depositX, depositY, depositW, depositH) {
-		if g.pendingBuildRecipeID != "" {
-			g.pendingBuildRecipeID = ""
-			return
-		}
-		g.depositCurrentRegionToGlobal()
+	if unitID, ok := g.pickRosterUnit(x, y); ok {
+		g.selectedRosterUnit = unitID
 		return
 	}
-	buildX, buildY, buildW, buildH := g.buildButtonRect()
-	if g.pointInRect(float64(x), float64(y), buildX, buildY, buildW, buildH) {
-		if g.pendingBuildRecipeID != "" {
-			g.pendingBuildRecipeID = ""
-			return
+	deployX, deployY, deployW, deployH := g.deployButtonRect()
+	if g.pointInRect(float64(x), float64(y), deployX, deployY, deployW, deployH) {
+		if g.tacticalTile >= 0 {
+			g.enterRun(g.tacticalTile)
 		}
-		g.mode = modeBuild
-		return
-	}
-	disX, disY, disW, disH := g.disassembleButtonRect()
-	if g.pointInRect(float64(x), float64(y), disX, disY, disW, disH) {
-		if g.pendingBuildRecipeID != "" {
-			g.pendingBuildRecipeID = ""
-			return
-		}
-		tile := g.currentTacticalTile()
-		if tile == nil || tile.Device == nil || tile.Device.Kind == core.DeviceKindNone {
-			return
-		}
-		if tile != nil && tile.Device != nil && tile.Device.Kind == core.DeviceKindSmelter {
-			g.configTileID = tile.ID
-			g.mode = modeSmelterConfig
-			return
-		}
-		if tile != nil && tile.Device != nil && tile.Device.Kind == core.DeviceKindAssembler {
-			g.configTileID = tile.ID
-			g.mode = modeAssemblerConfig
-			return
-		}
-		if tile != nil && tile.Device != nil && tile.Device.Kind == core.DeviceKindGenerator && g.solarRetrofitUnlocked() {
-			g.configTileID = tile.ID
-			g.mode = modeGeneratorConfig
-			return
-		}
-		if tile != nil && tile.Device != nil && tile.Device.SpecialStarter && tile.Device.Kind == core.DeviceKindMiner {
-			return
-		}
-		g.disassembleCurrentTacticalDevice()
 		return
 	}
 	if g.tacticalTile >= 0 {
@@ -3787,24 +3791,10 @@ func (g *Game) finishTacticalPointer(x, y int) {
 		}
 	}
 	if tileID, ok := g.pickTacticalTile(x, y); ok {
-		if g.pendingBuildRecipeID != "" {
-			g.tacticalTile = tileID
-			if g.placeRecipeOnTile(g.pendingBuildRecipeID, tileID) {
-				g.pendingBuildRecipeID = ""
-				g.saveSoon()
-			}
-			return
-		}
 		now := time.Now()
 		if tileID == g.tacticalTile && tileID == g.lastTapTacticalTileID && now.Sub(g.lastTapTacticalTime) <= doubleTapWindow {
 			g.lastTapTacticalTileID = -1
 			g.enterDish(tileID)
-			return
-		}
-		if g.tryCrankTacticalDevice(tileID) {
-			g.tacticalTile = tileID
-			g.lastTapTacticalTileID = tileID
-			g.lastTapTacticalTime = now
 			return
 		}
 		g.tacticalTile = tileID
@@ -3812,10 +3802,8 @@ func (g *Game) finishTacticalPointer(x, y int) {
 		g.lastTapTacticalTime = now
 		return
 	}
-	if g.pendingBuildRecipeID == "" {
-		g.tacticalTile = -1
-		g.lastTapTacticalTileID = -1
-	}
+	g.tacticalTile = -1
+	g.lastTapTacticalTileID = -1
 }
 
 func (g *Game) tryCrankTacticalDevice(tileID int) bool {
@@ -4166,6 +4154,31 @@ func (g *Game) pickDishCell(x, y int) (int, bool) {
 	return -1, false
 }
 
+func (g *Game) pickRosterUnit(x, y int) (int, bool) {
+	for i := range g.roster {
+		rx, ry, rw, rh := g.rosterRowRect(i)
+		if g.pointInRect(float64(x), float64(y), rx, ry, rw, rh) {
+			return i, true
+		}
+	}
+	return -1, false
+}
+
+func (g *Game) pickRunRosterUnit(x, y int) (int, bool) {
+	panelX := 20.0
+	panelY := float64(g.screenHeight) - 156
+	panelW := float64(g.screenWidth) - 40
+	cardW := (panelW - 32) / 3
+	for i := range g.roster {
+		cardX := panelX + 10 + float64(i)*(cardW+6)
+		cardY := panelY + 12
+		if g.pointInRect(float64(x), float64(y), cardX, cardY, cardW, 62) {
+			return i, true
+		}
+	}
+	return -1, false
+}
+
 func (g *Game) drawTacticalEntities(screen *ebiten.Image, tmap *core.TacticalMap, cx, cy, tileScale float64) {
 	for _, entity := range tmap.Entities {
 		if entity.TileID < 0 || entity.TileID >= len(tmap.Tiles) {
@@ -4219,6 +4232,21 @@ func (g *Game) enterDish(tileID int) {
 	g.dishTileID = tileID
 	g.dishCells = buildDishCells(g.tacticalID, tileID)
 	g.mode = modeDish
+}
+
+func (g *Game) enterRun(tileID int) {
+	tmap := g.currentTacticalMap()
+	if tmap == nil || tileID < 0 || tileID >= len(tmap.Tiles) {
+		return
+	}
+	g.tacticalTile = tileID
+	g.runTileID = tileID
+	g.runTurn = 1
+	if len(g.roster) == 0 {
+		g.roster = defaultRosterUnits()
+	}
+	g.selectedRosterUnit = clampIntLocal(g.selectedRosterUnit, 0, len(g.roster)-1)
+	g.mode = modeRun
 }
 
 func (g *Game) resetTacticalPerkRun() {
@@ -4303,6 +4331,29 @@ func (g *Game) dishRadius() float64 {
 
 func (g *Game) dishCellScale() float64 {
 	return g.dishRadius() / 7.8
+}
+
+func defaultRosterUnits() []rosterUnit {
+	return []rosterUnit{
+		{Name: "Pip", Role: "Sprout", Trait: "soft shell", HP: 8, Move: 3, Fill: color.RGBA{108, 214, 134, 245}},
+		{Name: "Mote", Role: "Skitter", Trait: "quick cilia", HP: 6, Move: 4, Fill: color.RGBA{116, 210, 206, 245}},
+		{Name: "Luma", Role: "Bloom", Trait: "sporeburst", HP: 7, Move: 3, Fill: color.RGBA{198, 134, 226, 245}},
+	}
+}
+
+func (g *Game) runBoardCenter() (float64, float64) {
+	return float64(g.screenWidth) * 0.5, float64(g.screenHeight) * 0.43
+}
+
+func (g *Game) runBoardScale() float64 {
+	return math.Min(float64(g.screenWidth), float64(g.screenHeight)) * 0.058
+}
+
+func runBoardAxialCenter(q, r int) core.Vec3 {
+	return core.Vec3{
+		X: math.Sqrt(3) * (float64(q) + float64(r)*0.5),
+		Y: 1.5 * float64(r),
+	}
 }
 
 func (g *Game) handleTacticalZoom() {
@@ -4605,6 +4656,24 @@ func (g *Game) stageGoalsCardHeight() float64 {
 
 func (g *Game) buildButtonRect() (float64, float64, float64, float64) {
 	return float64(g.screenWidth - 104), float64(g.screenHeight - 62), 88, 38
+}
+
+func (g *Game) tacticalRosterPanelRect() (float64, float64, float64, float64) {
+	return 16, 16, 178, 140
+}
+
+func (g *Game) rosterRowRect(index int) (float64, float64, float64, float64) {
+	x, y, w, _ := g.tacticalRosterPanelRect()
+	return x + 10, y + 32 + float64(index)*32, w - 20, 28
+}
+
+func (g *Game) deployButtonRect() (float64, float64, float64, float64) {
+	x, y, w, h := g.tacticalRosterPanelRect()
+	return x + 10, y + h + 8, w - 20, 38
+}
+
+func (g *Game) endTurnButtonRect() (float64, float64, float64, float64) {
+	return float64(g.screenWidth - 124), float64(g.screenHeight - 62), 108, 38
 }
 
 func (g *Game) tacticalSelectionPopupRect() (float64, float64, float64, float64) {
@@ -5680,10 +5749,7 @@ func (g *Game) drawSettingsPanel(screen *ebiten.Image) {
 		"Project " + projectName,
 		"Build " + g.displayVersion(),
 		"World controls",
-		"Dev stage jump",
 	}, 1)
-
-	g.drawStageJumpList(screen, x+18, y+104)
 
 	tx, ty, tw, th := g.creaturesToggleRect()
 	state := "OFF"
@@ -6245,8 +6311,20 @@ func minIntLocal(a, b int) int {
 	return b
 }
 
+func clampIntLocal(v, minV, maxV int) int {
+	if maxV < minV {
+		return minV
+	}
+	if v < minV {
+		return minV
+	}
+	if v > maxV {
+		return maxV
+	}
+	return v
+}
+
 func (g *Game) handleSettingsInput() {
-	g.handleStageJumpKeys()
 	if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) {
 		x, y := ebiten.CursorPosition()
 		g.settingsDown = true
@@ -6303,9 +6381,6 @@ func (g *Game) handleSettingsTap(x, y int) {
 		g.creaturesEnabled = !g.creaturesEnabled
 		g.saveSoon()
 		return
-	}
-	if stageID, ok := g.pickStageJump(x, y); ok {
-		g.jumpToStage(stageID)
 	}
 }
 
@@ -6442,10 +6517,12 @@ func (g *Game) tacticalMapForCell(cellID int) *core.TacticalMap {
 		return nil
 	}
 	if tmap, ok := g.tacticalMaps[cellID]; ok {
+		stripFactoryState(tmap)
 		return tmap
 	}
 	cell := &g.globe.Cells[cellID]
 	tmap := core.NewTacticalMap(cell, tacticalRadius)
+	stripFactoryState(tmap)
 	g.tacticalMaps[cellID] = tmap
 	return tmap
 }

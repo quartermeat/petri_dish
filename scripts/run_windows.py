@@ -29,7 +29,7 @@ def git_version(root: Path) -> str:
 def main() -> int:
     root = repo_root()
     parser = argparse.ArgumentParser(description="Build and launch Petri Dish on Windows.")
-    parser.add_argument("--view", choices=["settings", "tactical", "dish"], help="Optional startup view.")
+    parser.add_argument("--view", choices=["settings", "tactical", "dish", "run"], help="Optional startup view.")
     parser.add_argument("--screenshot", help="Save a screenshot and exit.")
     parser.add_argument("--no-build", action="store_true", help="Launch the existing debug executable.")
     args = parser.parse_args()

@@ -21,15 +21,17 @@ import (
 var Version = ""
 
 func main() {
-	startView := flag.String("view", "", "optional startup view: settings, tactical, dish")
+	startView := flag.String("view", "", "optional startup view: settings, tactical, dish, run")
 	screenshotPath := flag.String("screenshot", "", "optional PNG path to save a screenshot and exit")
 	flag.Parse()
 
 	game := petridish.NewGame()
 	game.SetVersion(Version)
-	if dir := desktopSaveDir(); dir != "" {
-		game.SetSaveDir(dir)
-		game.LoadOrInit()
+	if *screenshotPath == "" {
+		if dir := desktopSaveDir(); dir != "" {
+			game.SetSaveDir(dir)
+			game.LoadOrInit()
+		}
 	}
 	if *startView == "settings" {
 		game.OpenSettingsForTesting()
@@ -37,6 +39,8 @@ func main() {
 		game.OpenTacticalForTesting()
 	} else if *startView == "dish" {
 		game.OpenDishForTesting()
+	} else if *startView == "run" {
+		game.OpenRunForTesting()
 	}
 	if *screenshotPath != "" {
 		game.ConfigureScreenshot(*screenshotPath, 10)

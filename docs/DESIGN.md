@@ -13,7 +13,7 @@ For the current prototype, a tactical tile can zoom one level deeper into a livi
 
 The dish should become a bridge between experimentation and tactics. Successful cultures produce new traits, mutations, or perks that can later be applied to units used in the tactical battlefield. The design goal is for the player to feel like they are cultivating strange biological possibilities, then weaponizing or field-testing them in tactical encounters.
 
-The long-term shape is not a pure factory game or a pure globe toy. The current resource/build systems are useful prototype scaffolding, but future design choices should bend toward readable mobile tactics: clear unit state, sharp turn structure, compact battlefields, fast touch interactions, and decisions that feel good in short phone sessions.
+The long-term shape is not a factory game or a pure globe toy. The old resource/mining/build loop has been removed from the active prototype, and future design choices should bend toward readable mobile tactics: clear unit state, sharp turn structure, compact battlefields, fast touch interactions, and decisions that feel good in short phone sessions.
 
 Mewgenics is the reference point for tone and structure: strange little organisms, authored-feeling tactical situations, inherited/quirky traits, and battles where positioning and emergent unit behavior matter. Petri Dish should find its own cellular/biome identity rather than copying the theme directly.
 
