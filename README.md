@@ -25,6 +25,12 @@ The intended Java package for the generated mobile bindings is `com.quartermeat.
 Run the native desktop build from the repo root:
 
 ```powershell
+.\run_windows.cmd
+```
+
+The Python entrypoint is also available directly:
+
+```powershell
 python scripts\run_windows.py
 ```
 
