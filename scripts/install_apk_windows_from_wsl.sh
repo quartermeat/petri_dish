@@ -3,11 +3,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APK_PATH="${APK_PATH:-${ROOT_DIR}/android/app/build/outputs/apk/debug/app-debug.apk}"
-PACKAGE_NAME="${1:-com.hexglobe}"
-LAUNCH_ACTIVITY="${2:-com.hexglobe.MainActivity}"
+PACKAGE_NAME="${1:-com.quartermeat.petridish}"
+LAUNCH_ACTIVITY="${2:-com.quartermeat.petridish.MainActivity}"
 SHOW_LOGS_SECS="${SHOW_LOGS_SECS:-6}"
 ADB_WAIT_SECS="${ADB_WAIT_SECS:-20}"
-LOG_FILTER_REGEX="${LOG_FILTER_REGEX:-Helios|AndroidRuntime|Go|ebiten|FATAL|panic}"
+LOG_FILTER_REGEX="${LOG_FILTER_REGEX:-Petri Dish|AndroidRuntime|Go|ebiten|FATAL|panic}"
 
 source "/home/jerem/work/rewind/CODEX_rewind/scripts/lib_local_dev.sh"
 

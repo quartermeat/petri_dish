@@ -2,18 +2,20 @@ package mobile
 
 import (
 	"github.com/hajimehoshi/ebiten/v2/mobile"
-	"hex_globe/hexglobe"
+	"petri_dish/petridish"
 )
 
 // Version is overridden at build time via:
-//   -ldflags "-X hex_globe/mobile.Version=$(git describe --always --dirty)"
+//
+//	-ldflags "-X petri_dish/mobile.Version=$(git describe --always --dirty)"
+//
 // Empty version forces every load to be treated as version-mismatched.
 var Version = ""
 
-var currentGame *hexglobe.Game
+var currentGame *petridish.Game
 
 func init() {
-	currentGame = hexglobe.NewGame()
+	currentGame = petridish.NewGame()
 	currentGame.SetVersion(Version)
 	mobile.SetGame(currentGame)
 }

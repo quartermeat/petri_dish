@@ -41,8 +41,9 @@ type ProgressionBook struct {
 type RecipeKind string
 
 const (
-	RecipePart   RecipeKind = "part"
-	RecipeDevice RecipeKind = "device"
+	RecipePart    RecipeKind = "part"
+	RecipeDevice  RecipeKind = "device"
+	RecipeUpgrade RecipeKind = "upgrade"
 )
 
 type RecipeIngredient struct {
@@ -359,7 +360,7 @@ func DefaultProgressionBook() *ProgressionBook {
 			},
 			"mechanics": {
 				ID:          "mechanics",
-				Title:       "Orbital Export",
+				Title:       "Solar Preparation",
 				NextStageID: "",
 				VisibleResources: []ResourceType{
 					ResourceStone,
@@ -370,7 +371,9 @@ func DefaultProgressionBook() *ProgressionBook {
 					ResourceCopperIngot,
 					ResourceGear,
 				},
-				KnownRecipes: nil,
+				KnownRecipes: []string{
+					"solar-retrofit",
+				},
 				PerkPowerThresholds: []float64{
 					180,
 					420,
@@ -386,9 +389,15 @@ func DefaultProgressionBook() *ProgressionBook {
 				},
 				Goals: []ProgressGoal{
 					{
-						Kind:     GoalExportResource,
-						Label:    "export to orbit",
+						Kind:     GoalProduceResource,
+						Label:    "stockpile solar gears",
 						Resource: ResourceGear,
+						Amount:   8,
+					},
+					{
+						Kind:     GoalDiscoverRecipe,
+						Label:    "unlock solar retrofit",
+						RecipeID: "solar-retrofit",
 						Amount:   1,
 					},
 				},
@@ -478,10 +487,9 @@ func DefaultRecipeBook() *RecipeBook {
 					{X: 2, Y: 3, Part: DevicePartOutput},
 				},
 				Ingredients: []RecipeIngredient{
-					{RecipeID: "frame", Amount: 2},
-					{RecipeID: "drill", Amount: 1},
-					{RecipeID: "motor", Amount: 1},
-					{RecipeID: "output", Amount: 1},
+					{Resource: ResourceStone, Amount: 6},
+					{Resource: ResourceIronOre, Amount: 5},
+					{Resource: ResourceCopperOre, Amount: 3},
 				},
 			},
 			"smelter": {
@@ -496,9 +504,9 @@ func DefaultRecipeBook() *RecipeBook {
 					{X: 2, Y: 4, Part: DevicePartHandCrank},
 				},
 				Ingredients: []RecipeIngredient{
-					{Resource: ResourceStone, Amount: 3},
-					{RecipeID: "crank", Amount: 1},
-					{RecipeID: "motor", Amount: 1},
+					{Resource: ResourceStone, Amount: 6},
+					{Resource: ResourceIronOre, Amount: 1},
+					{Resource: ResourceCopperOre, Amount: 3},
 				},
 			},
 			"generator": {
@@ -513,11 +521,10 @@ func DefaultRecipeBook() *RecipeBook {
 					{X: 2, Y: 3, Part: DevicePartOutput},
 				},
 				Ingredients: []RecipeIngredient{
-					{Resource: ResourceStone, Amount: 4},
+					{Resource: ResourceStone, Amount: 8},
 					{Resource: ResourceIronIngot, Amount: 2},
-					{RecipeID: "motor", Amount: 1},
-					{RecipeID: "output", Amount: 1},
-					{RecipeID: "crank", Amount: 1},
+					{Resource: ResourceIronOre, Amount: 1},
+					{Resource: ResourceCopperOre, Amount: 4},
 				},
 			},
 			"assembler": {
@@ -534,13 +541,10 @@ func DefaultRecipeBook() *RecipeBook {
 					{X: 2, Y: 3, Part: DevicePartHandCrank},
 				},
 				Ingredients: []RecipeIngredient{
-					{Resource: ResourceStone, Amount: 4},
-					{Resource: ResourceIronIngot, Amount: 4},
-					{Resource: ResourceCopperIngot, Amount: 2},
-					{RecipeID: "frame", Amount: 2},
-					{RecipeID: "motor", Amount: 1},
-					{RecipeID: "output", Amount: 1},
-					{RecipeID: "crank", Amount: 1},
+					{Resource: ResourceStone, Amount: 10},
+					{Resource: ResourceIronIngot, Amount: 8},
+					{Resource: ResourceCopperIngot, Amount: 4},
+					{Resource: ResourceCopperOre, Amount: 3},
 				},
 			},
 			"iron-ingot": {
@@ -561,6 +565,17 @@ func DefaultRecipeBook() *RecipeBook {
 				Ingredients: []RecipeIngredient{
 					{Resource: ResourceCopperOre, Amount: 1},
 					{Resource: ResourceCoal, Amount: 1},
+				},
+			},
+			"solar-retrofit": {
+				ID:      "solar-retrofit",
+				Title:   "Solar Retrofit",
+				Kind:    RecipeUpgrade,
+				Device:  DeviceKindGenerator,
+				StageID: "mechanics",
+				Ingredients: []RecipeIngredient{
+					{Resource: ResourceGear, Amount: 8},
+					{Resource: ResourceCopperIngot, Amount: 6},
 				},
 			},
 		},

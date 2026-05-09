@@ -1,4 +1,4 @@
-module hex_globe
+module petri_dish
 
 go 1.24.5
 

@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 mkdir -p debug/log
 
 timestamp="$(date +%Y%m%d_%H%M%S)"
-exe_wsl="$(pwd)/debug/log/hexglobe_windows.exe"
+exe_wsl="$(pwd)/debug/log/petridish_windows.exe"
 png_wsl="$(pwd)/debug/log/settings_${timestamp}.png"
 
 GOOS=windows GOARCH=amd64 go build -o "$exe_wsl" .

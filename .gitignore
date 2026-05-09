@@ -1,11 +1,16 @@
+.codex
 bin/
 dist/
+debug/
 .localdev/
 .tools/
+.vscode/
 logs/
 android/app/libs/
 android/app/build/
 android/.gradle/
+/hex_globe
+/petri_dish
 *.exe
 *.apk
 *.aab

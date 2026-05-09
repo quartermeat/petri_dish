@@ -1,4 +1,4 @@
-# Helios — Design
+# Petri Dish — Design
 
 What the code currently does and how it's put together. No forward-looking opinions — those live in the conversation, not here.
 
@@ -10,14 +10,14 @@ A rotating Goldberg-polyhedron globe rendered with Ebitengine. Topology is built
 
 ```
 core/        geometry, math, ruleset interface + demo
-hexglobe/    Ebiten Game — loop, projection, input, draw
+petridish/    Ebiten Game — loop, projection, input, draw
 mobile/      gomobile bridge (mobile.SetGame)
 android/     Gradle app consuming the generated AAR
 main.go      !android desktop entry
 scripts/     WSL build / install helpers
 ```
 
-`core/` has no Ebiten imports. `hexglobe/` is the only package that touches pixels.
+`core/` has no Ebiten imports. `petridish/` is the only package that touches pixels.
 
 ## Geometry
 
@@ -33,7 +33,7 @@ scripts/     WSL build / install helpers
 | 0 | 12 |
 | 1 | 42 |
 | 2 | 162 |
-| 3 | 642 (current default in `hexglobe.NewGame`) |
+| 3 | 642 (current default in `petridish.NewGame`) |
 | 4 | 2562 |
 
 ## Cell model
@@ -79,7 +79,7 @@ type CellStyle struct {
 - `Update` runs per tick. May mutate cells, `globe.RotationY`, `globe.TiltX`, `globe.SelectedCell`.
 - `StyleCell` runs per-cell per-frame, returning how the cell should look right now. It does not mutate.
 
-`hexglobe.NewGame` hard-codes `core.NewDemoRuleset()`.
+`petridish.NewGame` hard-codes `core.NewDemoRuleset()`.
 
 ## Demo ruleset (`core/rules.go`)
 
@@ -87,7 +87,7 @@ type CellStyle struct {
 - **Update.** Rotates the globe at 0.32 rad/s (suppressed while dragging — that check lives in `Game.Update`). Re-picks `SelectedCell` as the front-facing land cell closest to a fixed screen-space target.
 - **StyleCell.** Non-ocean cells extrude outward proportional to elevation. Coasts blend a sand tint and nudge up. The selected cell pulses with `sin(r.time * 2.2)`.
 
-## Rendering pipeline (`hexglobe/game.go:drawGlobe`)
+## Rendering pipeline (`petridish/game.go:drawGlobe`)
 
 Per frame:
 
@@ -108,7 +108,7 @@ The backdrop is five alpha-stacked discs behind the globe.
 - Perspective is fixed; no zoom.
 - Pentagon cells use the same fan triangulation; their centre is slightly off the true centroid of their corners.
 
-## Input (`hexglobe/game.go:handlePointerInput`)
+## Input (`petridish/game.go:handlePointerInput`)
 
 Unified mouse + touch. On `MouseButtonLeft` or first touch, start dragging. Moves integrate:
 
@@ -121,8 +121,8 @@ Touch is single-finger: the first touch ID wins, extra touches are ignored. Auto
 
 ```go
 // mobile/mobile.go
-func init() { mobile.SetGame(hexglobe.NewGame()) }
+func init() { mobile.SetGame(petridish.NewGame()) }
 func Dummy() {} // gomobile requires ≥1 exported symbol
 ```
 
-`ebitenmobile bind -target android -javapkg com.hexglobe -o android/app/libs/Helios.aar ./mobile` produces a `com.hexglobe.mobile` Java package containing `EbitenView` and `Mobile`. `MainActivity` inflates `EbitenView` from XML, calls `Seq.setContext(applicationContext)` and `Mobile.dummy()` during `onCreate`, and proxies lifecycle into `suspendGame` / `resumeGame`.
+`ebitenmobile bind -target android -javapkg com.quartermeat.petridish -o android/app/libs/PetriDish.aar ./mobile` produces a `com.quartermeat.petridish.mobile` Java package containing `EbitenView` and `Mobile`. `MainActivity` inflates `EbitenView` from XML, calls `Seq.setContext(applicationContext)` and `Mobile.dummy()` during `onCreate`, and proxies lifecycle into `suspendGame` / `resumeGame`.

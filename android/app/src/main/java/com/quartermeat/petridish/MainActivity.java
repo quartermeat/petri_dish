@@ -1,4 +1,4 @@
-package com.hexglobe;
+package com.quartermeat.petridish;
 
 import android.app.Activity;
 import android.os.Build;
@@ -9,8 +9,8 @@ import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
 
-import com.hexglobe.mobile.EbitenView;
-import com.hexglobe.mobile.Mobile;
+import com.quartermeat.petridish.mobile.EbitenView;
+import com.quartermeat.petridish.mobile.Mobile;
 
 import go.Seq;
 

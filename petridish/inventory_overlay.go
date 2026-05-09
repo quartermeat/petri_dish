@@ -1,4 +1,4 @@
-package hexglobe
+package petridish
 
 import (
 	"fmt"
@@ -7,7 +7,7 @@ import (
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
-	"hex_globe/core"
+	"petri_dish/core"
 )
 
 const inventoryOverlayCooldown = 0.6
@@ -22,6 +22,17 @@ var fullInventoryResources = []core.ResourceType{
 	core.ResourceIronOre,
 	core.ResourceCopperOre,
 	core.ResourceCoal,
+	core.ResourceIronIngot,
+	core.ResourceCopperIngot,
+	core.ResourceGear,
+	core.ResourceCrystal,
+	core.ResourceFieldData,
+}
+
+var strategicFullInventoryResources = []core.ResourceType{
+	core.ResourceStone,
+	core.ResourceIronOre,
+	core.ResourceCopperOre,
 	core.ResourceIronIngot,
 	core.ResourceCopperIngot,
 	core.ResourceGear,
@@ -129,7 +140,7 @@ func (g *Game) drawInventoryOverlay(screen *ebiten.Image) {
 	rowY := cy + 60
 	g.drawInventorySectionHeader(screen, "RESOURCES", textX, rowY)
 	rowY += 22
-	for _, r := range fullInventoryResources {
+	for _, r := range g.fullInventoryResources() {
 		labelX := int(textX) + 18
 		if resourceHasMapIcon(r) {
 			g.drawInventoryResourceIcon(screen, textX+6, rowY+6, r)
@@ -139,6 +150,13 @@ func (g *Game) drawInventoryOverlay(screen *ebiten.Image) {
 		ebitenutil.DebugPrintAt(screen, fmt.Sprintf("%-12s %d", resourceShortLabel(r), inventory[r]), labelX, int(rowY))
 		rowY += 18
 	}
+}
+
+func (g *Game) fullInventoryResources() []core.ResourceType {
+	if g.mode == modeStrategic || g.mode == modeTech {
+		return strategicFullInventoryResources
+	}
+	return fullInventoryResources
 }
 
 func (g *Game) drawInventorySectionHeader(screen *ebiten.Image, label string, x, y float64) {

@@ -89,10 +89,16 @@ type DeviceLayout struct {
 	Kind            DeviceKind
 	SpecialStarter  bool
 	ConfigInput     ResourceType         `json:"configInput,omitempty"`
+	ConfigMode      string               `json:"configMode,omitempty"`
 	DeployTimer     float64              `json:"deployTimer,omitempty"`
 	RefundResources map[ResourceType]int `json:"refundResources,omitempty"`
 	RefundParts     map[DevicePart]int   `json:"refundParts,omitempty"`
 }
+
+const (
+	DeviceModeCoal  = "coal"
+	DeviceModeSolar = "solar"
+)
 
 type DeviceKind int
 
@@ -200,7 +206,7 @@ func NewTacticalMap(cell *Cell, radius int) *TacticalMap {
 				Fill:              fill,
 				Resource:          res,
 				ResourceRichness:  richness,
-				ResourceRemaining: richness * 120,
+				ResourceRemaining: ResourceCapacity(res, richness),
 				Device:            NewDeviceLayout(5, 5),
 			})
 			id++
@@ -211,6 +217,9 @@ func NewTacticalMap(cell *Cell, radius int) *TacticalMap {
 		tmap.ensureResourcePresence(ResourceIronOre, func(tile TacticalTile) float64 {
 			return tile.Elevation*1.3 + (1-tile.Moisture)*0.6
 		}, 0.52)
+		tmap.ensureResourceCount(ResourceIronOre, 2, func(tile TacticalTile) float64 {
+			return tile.Elevation*1.3 + (1-tile.Moisture)*0.6
+		}, 0.48)
 		tmap.ensureResourcePresence(ResourceCoal, func(tile TacticalTile) float64 {
 			return (1-tile.Moisture)*1.2 + (1-math.Abs(tile.Elevation-0.45))*0.4
 		}, 0.44)
@@ -496,7 +505,6 @@ func (m *TacticalMap) Produce(dt float64, inventory map[ResourceType]int, minedT
 	if m.Supply == nil {
 		m.Supply = map[ResourceType]int{}
 	}
-	hasGate := m.HasDevice(DeviceKindGate)
 	outMul := mods.outputMul()
 	costMul := mods.powerCostMul()
 	smelterOutMul := mods.smelterOutputMul()
@@ -510,7 +518,7 @@ func (m *TacticalMap) Produce(dt float64, inventory map[ResourceType]int, minedT
 		}
 		switch tile.Device.Kind {
 		case DeviceKindMiner:
-			m.produceMiner(tile, dt, m.Supply, hasGate, minedTotals, outMul, costMul, decayMul, mods)
+			m.produceMiner(tile, dt, m.Supply, minedTotals, outMul, costMul, decayMul, mods)
 		case DeviceKindSmelter:
 			m.produceSmelter(tile, dt, m.Supply, minedTotals, smelterOutMul, smelterCostMul, decayMul, mods)
 		case DeviceKindGenerator:
@@ -521,8 +529,15 @@ func (m *TacticalMap) Produce(dt float64, inventory map[ResourceType]int, minedT
 	}
 }
 
-func (m *TacticalMap) produceMiner(tile *TacticalTile, dt float64, localSupply map[ResourceType]int, hasGate bool, minedTotals map[ResourceType]int, outMul, costMul, decayMul float64, mods *ProductionMods) {
-	if !hasGate {
+func (m *TacticalMap) produceMiner(tile *TacticalTile, dt float64, localSupply map[ResourceType]int, minedTotals map[ResourceType]int, outMul, costMul, decayMul float64, mods *ProductionMods) {
+	if tile.Device == nil {
+		return
+	}
+	if tile.Device.SpecialStarter {
+		if !m.HasDevice(DeviceKindGate) {
+			return
+		}
+	} else if !m.HasAdjacentDevice(tile, DeviceKindGate) {
 		return
 	}
 	if tile.Resource == ResourceNone || tile.ResourceRemaining <= 0 {
@@ -611,15 +626,22 @@ func (m *TacticalMap) produceSmelter(tile *TacticalTile, dt float64, inventory m
 }
 
 func (m *TacticalMap) produceGenerator(tile *TacticalTile, dt float64, inventory map[ResourceType]int, minedTotals map[ResourceType]int, powerMul, decayMul float64, mods *ProductionMods) {
-	if !m.HasAdjacentDevice(tile, DeviceKindGate) {
-		tile.PowerBuffer = math.Max(0, tile.PowerBuffer-dt*0.04*decayMul)
-		return
-	}
 	def := DeviceDefinition(tile.Device.Kind)
 	if def.Kind == DeviceKindNone {
 		return
 	}
 	tile.PowerBuffer = math.Max(0, tile.PowerBuffer-dt*0.04*decayMul)
+	if tile.Device.ConfigMode == DeviceModeSolar {
+		tile.ResourceCarry += def.OutputPerSecond * 0.42 * dt
+		whole := int(tile.ResourceCarry)
+		if whole <= 0 {
+			return
+		}
+		tile.ResourceCarry -= float64(whole)
+		generated := def.RunPowerCost * powerMul * 0.62 * float64(whole)
+		m.distributeGeneratedPower(tile, generated, mods)
+		return
+	}
 	if inventory == nil || inventory[ResourceCoal] <= 0 {
 		return
 	}
@@ -637,6 +659,13 @@ func (m *TacticalMap) produceGenerator(tile *TacticalTile, dt float64, inventory
 	inventory[ResourceCoal] -= whole
 	tile.ResourceCarry -= float64(whole)
 	generated := def.RunPowerCost * powerMul * float64(whole)
+	m.distributeGeneratedPower(tile, generated, mods)
+}
+
+func (m *TacticalMap) distributeGeneratedPower(tile *TacticalTile, generated float64, mods *ProductionMods) {
+	if generated <= 0 {
+		return
+	}
 	if mods != nil && mods.ProductivePower != nil {
 		*mods.ProductivePower += generated
 	}
@@ -652,7 +681,12 @@ func (m *TacticalMap) produceGenerator(tile *TacticalTile, dt float64, inventory
 }
 
 func (m *TacticalMap) produceAssembler(tile *TacticalTile, dt float64, inventory map[ResourceType]int, minedTotals map[ResourceType]int, decayMul float64, mods *ProductionMods) {
-	if !m.HasAdjacentDevice(tile, DeviceKindGate) {
+	output, ok := AssemblerOutputForConfig(tile.Device.ConfigInput)
+	if !ok {
+		tile.PowerBuffer = math.Max(0, tile.PowerBuffer-dt*0.04*decayMul)
+		return
+	}
+	if !m.HasAdjacentSmelterOutput(tile, ResourceIronIngot) || !m.HasAdjacentSmelterOutput(tile, ResourceCopperIngot) {
 		tile.PowerBuffer = math.Max(0, tile.PowerBuffer-dt*0.04*decayMul)
 		return
 	}
@@ -688,11 +722,19 @@ func (m *TacticalMap) produceAssembler(tile *TacticalTile, dt float64, inventory
 	}
 	inventory[ResourceIronIngot] -= batches * 2
 	inventory[ResourceCopperIngot] -= batches
-	inventory[ResourceGear] += batches
+	inventory[output] += batches
 	if minedTotals != nil {
-		minedTotals[ResourceGear] += batches
+		minedTotals[output] += batches
 	}
 	tile.ResourceCarry -= float64(batches)
+}
+
+func AssemblerOutputForConfig(config ResourceType) (ResourceType, bool) {
+	switch config {
+	case ResourceGear:
+		return ResourceGear, true
+	}
+	return ResourceNone, false
 }
 
 func SmelterOutputForInput(input ResourceType) (ResourceType, bool) {
@@ -720,6 +762,26 @@ func (m *TacticalMap) HasAdjacentDevice(tile *TacticalTile, kind DeviceKind) boo
 		}
 	}
 	return false
+}
+
+func (m *TacticalMap) HasAdjacentSmelterOutput(tile *TacticalTile, output ResourceType) bool {
+	if m == nil || tile == nil || output == ResourceNone {
+		return false
+	}
+	for _, neighbor := range m.adjacentDeviceTiles(tile) {
+		if neighbor.Device == nil || neighbor.Device.Kind != DeviceKindSmelter {
+			continue
+		}
+		smelted, ok := SmelterOutputForInput(neighbor.Device.ConfigInput)
+		if ok && smelted == output {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *TacticalMap) AdjacentTiles(tile *TacticalTile) []*TacticalTile {
+	return m.adjacentDeviceTiles(tile)
 }
 
 func (m *TacticalMap) HasDevice(kind DeviceKind) bool {
@@ -791,12 +853,28 @@ func (m *TacticalMap) adjacentDeviceTiles(tile *TacticalTile) []*TacticalTile {
 }
 
 func (m *TacticalMap) ensureResourcePresence(resource ResourceType, score func(TacticalTile) float64, minRichness float64) {
+	m.ensureResourceCount(resource, 1, score, minRichness)
+}
+
+func (m *TacticalMap) ensureResourceCount(resource ResourceType, count int, score func(TacticalTile) float64, minRichness float64) {
+	if m == nil || resource == ResourceNone || count <= 0 {
+		return
+	}
+	present := 0
 	for _, tile := range m.Tiles {
 		if tile.Resource == resource {
-			return
+			present++
 		}
 	}
+	for present < count {
+		if !m.promoteBestResourceTile(resource, score, minRichness) {
+			return
+		}
+		present++
+	}
+}
 
+func (m *TacticalMap) promoteBestResourceTile(resource ResourceType, score func(TacticalTile) float64, minRichness float64) bool {
 	bestIndex := -1
 	bestScore := -1.0
 	for i, tile := range m.Tiles {
@@ -810,13 +888,34 @@ func (m *TacticalMap) ensureResourcePresence(resource ResourceType, score func(T
 		}
 	}
 	if bestIndex < 0 {
-		return
+		return false
 	}
 
 	tile := &m.Tiles[bestIndex]
 	tile.Resource = resource
 	tile.ResourceRichness = math.Max(tile.ResourceRichness, minRichness)
-	tile.ResourceRemaining = tile.ResourceRichness * 120
+	tile.ResourceRemaining = ResourceCapacity(tile.Resource, tile.ResourceRichness)
+	return true
+}
+
+func ResourceCapacity(resource ResourceType, richness float64) float64 {
+	if richness <= 0 {
+		return 0
+	}
+	switch resource {
+	case ResourceIronOre:
+		return richness * 320
+	case ResourceCopperOre:
+		return richness * 260
+	case ResourceCoal:
+		return richness * 240
+	case ResourceStone:
+		return richness * 220
+	case ResourceCrystal:
+		return richness * 180
+	default:
+		return richness * 180
+	}
 }
 
 // Rehydrate rebuilds runtime indices (microIndex, tileIndex, microOccupied)

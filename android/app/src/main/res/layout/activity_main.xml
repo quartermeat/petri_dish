@@ -4,7 +4,7 @@
     android:layout_height="match_parent"
     android:background="#081020">
 
-    <com.hexglobe.mobile.EbitenView
+    <com.quartermeat.petridish.mobile.EbitenView
         android:id="@+id/ebitenview"
         android:layout_width="match_parent"
         android:layout_height="match_parent"

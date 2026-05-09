@@ -1,4 +1,4 @@
-package hexglobe
+package petridish
 
 import (
 	"fmt"
@@ -9,7 +9,7 @@ import (
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
 	"github.com/hajimehoshi/ebiten/v2/vector"
-	"hex_globe/core"
+	"petri_dish/core"
 )
 
 const (
@@ -17,6 +17,7 @@ const (
 	perkChoiceTapCooldown = 1.5 // seconds before taps register, so heated-tap players can read
 	perkChoiceSelectHold  = 0.18
 	perkCelebrationLength = 1.35
+	perkOfferCooldown     = 7.0
 )
 
 type perkChoiceState struct {
@@ -101,6 +102,9 @@ func (g *Game) hasActivePerkKind(kind core.PerkKind) bool {
 // recordProductivePower adds to the current tactical region's power-spent
 // meter and triggers a perk choice if a new threshold has been crossed.
 func (g *Game) recordProductivePower(power float64) {
+	if !g.tacticalPerkSystemActive() {
+		return
+	}
 	progressKey := g.perkProgressKey()
 	if power <= 0 || progressKey == "" {
 		return
@@ -112,11 +116,30 @@ func (g *Game) recordProductivePower(power float64) {
 	g.maybeTriggerPerkChoice()
 }
 
+func (g *Game) advancePerkOfferCooldown(dt float64) {
+	if !g.tacticalPerkSystemActive() {
+		return
+	}
+	if g.perkOfferCooldown <= 0 {
+		return
+	}
+	g.perkOfferCooldown = math.Max(0, g.perkOfferCooldown-dt)
+	if g.perkOfferCooldown == 0 {
+		g.maybeTriggerPerkChoice()
+	}
+}
+
 // maybeTriggerPerkChoice checks the current region-run thresholds against
 // (power spent, perks already awarded) and opens the picker if a new
 // threshold has been reached.
 func (g *Game) maybeTriggerPerkChoice() {
+	if !g.tacticalPerkSystemActive() {
+		return
+	}
 	if g.perkChoice != nil {
+		return
+	}
+	if g.perkOfferCooldown > 0 {
 		return
 	}
 	progressKey := g.perkProgressKey()
@@ -124,14 +147,15 @@ func (g *Game) maybeTriggerPerkChoice() {
 		return
 	}
 	stage := g.currentStage()
-	if len(stage.PerkPowerThresholds) == 0 || len(stage.PerkPool) == 0 {
+	thresholds := g.tacticalPerkThresholds()
+	if len(thresholds) == 0 || len(stage.PerkPool) == 0 {
 		return
 	}
 	awarded := 0
 	if g.perksAwarded != nil {
 		awarded = g.perksAwarded[progressKey]
 	}
-	threshold := nextPerkThreshold(stage.PerkPowerThresholds, awarded)
+	threshold := nextPerkThreshold(thresholds, awarded)
 	if g.stagePowerSpent[progressKey] < threshold {
 		return
 	}
@@ -225,15 +249,13 @@ func (g *Game) applyPerk(def core.PerkDef) {
 		g.perksAwarded[g.perkChoice.stageID]++
 	}
 	g.perkChoice = nil
+	g.perkOfferCooldown = perkOfferCooldown
 	g.saveSoon()
-	// Another threshold may already be crossed if power flew past two in
-	// the same frame — re-check.
-	g.maybeTriggerPerkChoice()
 }
 
 // perkChoiceActive reports whether the picker is currently blocking input.
 func (g *Game) perkChoiceActive() bool {
-	return g.perkChoice != nil
+	return g.tacticalPerkSystemActive() && g.perkChoice != nil
 }
 
 // perkProgress reports cumulative progress toward the next perk in the
@@ -245,8 +267,8 @@ func (g *Game) perkProgress() (float64, float64, bool) {
 	if progressKey == "" {
 		return 0, 0, false
 	}
-	stage := g.currentStage()
-	if len(stage.PerkPowerThresholds) == 0 {
+	thresholds := g.tacticalPerkThresholds()
+	if len(thresholds) == 0 {
 		return 0, 0, false
 	}
 	awarded := 0
@@ -257,7 +279,7 @@ func (g *Game) perkProgress() (float64, float64, bool) {
 	if g.stagePowerSpent != nil {
 		spent = g.stagePowerSpent[progressKey]
 	}
-	return spent, nextPerkThreshold(stage.PerkPowerThresholds, awarded), true
+	return spent, nextPerkThreshold(thresholds, awarded), true
 }
 
 func (g *Game) perkProgressKey() string {
@@ -265,6 +287,25 @@ func (g *Game) perkProgressKey() string {
 		return ""
 	}
 	return fmt.Sprintf("region:%d", g.tacticalID)
+}
+
+func (g *Game) tacticalPerkSystemActive() bool {
+	return g.mode == modeTactical && g.tacticalID >= 0
+}
+
+func (g *Game) shutdownTacticalPerkSystem() {
+	g.perkChoice = nil
+	g.perkCelebrationTimer = 0
+	g.perkOfferCooldown = 0
+}
+
+func (g *Game) tacticalPerkThresholds() []float64 {
+	if g.progression != nil {
+		if stage, ok := g.progression.Stage(g.progression.StartStageID); ok && len(stage.PerkPowerThresholds) > 0 {
+			return stage.PerkPowerThresholds
+		}
+	}
+	return []float64{2, 4, 8}
 }
 
 func nextPerkThreshold(thresholds []float64, awarded int) float64 {
@@ -279,11 +320,11 @@ func nextPerkThreshold(thresholds []float64, awarded int) float64 {
 	}
 	last := thresholds[len(thresholds)-1]
 	prev := thresholds[len(thresholds)-2]
-	step := last - prev
-	if step <= 0 {
-		step = last
+	scale := last / prev
+	if scale <= 1 {
+		scale = 2
 	}
-	return last + step*float64(awarded-len(thresholds)+1)
+	return last * math.Pow(scale, float64(awarded-len(thresholds)+1))
 }
 
 // drawPerkProgressCard renders a small "PERK" meter at (x, y). Returns the

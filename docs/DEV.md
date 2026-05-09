@@ -1,6 +1,6 @@
-# Helios — Dev Guide
+# Petri Dish — Dev Guide
 
-How to build, run, test, and ship Helios from WSL. See `docs/DESIGN.md` for architecture.
+How to build, run, test, and ship Petri Dish from WSL. See `docs/DESIGN.md` for architecture.
 
 ## Prereqs
 
@@ -12,25 +12,25 @@ How to build, run, test, and ship Helios from WSL. See `docs/DESIGN.md` for arch
 | Java | 17 (compileOptions). Activated via `rewindecho_activate_java_toolchain`. |
 | `adb` | Windows-side `adb.exe` reached from WSL; resolver in `lib_local_dev.sh` picks it up. |
 
-> **Cross-project dependency:** Helios currently leans on scripts and a vendored Ebiten fork inside the `rewind` project. If you move or delete `/home/jerem/work/rewind/CODEX_rewind`, the Android build and the desktop Ebiten linking both break. See *Decoupling* below.
+> **Cross-project dependency:** Petri Dish currently leans on scripts and a vendored Ebiten fork inside the `rewind` project. If you move or delete `/home/jerem/work/rewind/CODEX_rewind`, the Android build and the desktop Ebiten linking both break. See *Decoupling* below.
 
 ## Desktop
 
 ```bash
-cd /home/jerem/work/hex_globe/CLAUDE_hex_globe
+cd /mnt/d/Codex/Projects/work/petri_dish
 go run .                                       # launches Ebiten window
-go build -o bin/hex_globe .                    # optional: build binary
+go build -o bin/petri_dish .                    # optional: build binary
 ```
 
-Entry point: `main.go` → `hexglobe.NewGame()`. The window is opened at 2x the logical size (`432x768` → `864x1536`).
+Entry point: `main.go` → `petridish.NewGame()`. The window is opened at 2x the logical size (`432x768` → `864x1536`).
 
 ### WSL caveat
 
 Ebiten / GLFW crashes the WSLg display when run directly from WSL on many machines — the app boots, then the VM hangs. If that happens, cross-compile and run from Windows:
 
 ```bash
-GOOS=windows GOARCH=amd64 go build -o bin/hex_globe.exe .
-# then run bin/hex_globe.exe from PowerShell / Explorer
+GOOS=windows GOARCH=amd64 go build -o bin/petri_dish.exe .
+# then run bin/petri_dish.exe from PowerShell / Explorer
 ```
 
 Tests that import Ebiten/GLFW should **not** run under native WSL Go for the same reason — build them as a Windows test binary (`go test -c`) when needed. The current tests in `core/` are pure Go and safe in WSL.
@@ -54,7 +54,7 @@ go test ./core/ -run TestNewGlobeProducesHexSphereTopology -v
 
 This calls, in order:
 1. `scripts/build_apk_wsl.sh` — binds the Go mobile package into an AAR and runs `gradlew assembleDebug`.
-2. `scripts/install_apk_windows_from_wsl.sh` — installs via `adb`, force-stops any previous instance, launches the activity, and tails `logcat` for ~6 s filtered by `Helios|AndroidRuntime|Go|ebiten|FATAL|panic`.
+2. `scripts/install_apk_windows_from_wsl.sh` — installs via `adb`, force-stops any previous instance, launches the activity, and tails `logcat` for ~6 s filtered by `Petri Dish|AndroidRuntime|Go|ebiten|FATAL|panic`.
 
 Logs are written to `logs/build_install_<timestamp>.txt`.
 
@@ -67,37 +67,37 @@ Logs are written to `logs/build_install_<timestamp>.txt`.
 
 What this does:
 - Builds `ebitenmobile` from the local Ebiten fork (output: `.tools/ebitenmobile`).
-- Runs `ebitenmobile bind -target android -javapkg com.hexglobe -o android/app/libs/Helios.aar ./mobile`.
+- Runs `ebitenmobile bind -target android -javapkg com.quartermeat.petridish -o android/app/libs/PetriDish.aar ./mobile`.
 - Runs `gradlew assembleDebug --no-daemon` against `android/`.
 
 ### Just install an already-built APK
 
 ```bash
-./scripts/install_apk_windows_from_wsl.sh com.hexglobe com.hexglobe.MainActivity
+./scripts/install_apk_windows_from_wsl.sh com.quartermeat.petridish com.quartermeat.petridish.MainActivity
 # Env knobs:
 #   APK_PATH          default android/app/build/outputs/apk/debug/app-debug.apk
 #   ANDROID_SERIAL    target a specific device when multiple are attached
 #   SHOW_LOGS_SECS    seconds of logcat to collect after launch (default 6)
-#   LOG_FILTER_REGEX  grep filter for logcat (default includes Helios|ebiten|FATAL)
+#   LOG_FILTER_REGEX  grep filter for logcat (default includes Petri Dish|ebiten|FATAL)
 ```
 
 ### Android app facts
 
-- Package / applicationId: `com.hexglobe`
+- Package / applicationId: `com.quartermeat.petridish`
 - minSdk 26, targetSdk 35, compileSdk 35
 - Portrait-locked, immersive / fullscreen, GLES 2.0 required
-- `MainActivity` hosts `com.hexglobe.mobile.EbitenView` and calls `Mobile.dummy()` to pull the Go bindings in; `Seq.setContext(...)` wires the Android context into gomobile.
+- `MainActivity` hosts `com.quartermeat.petridish.mobile.EbitenView` and calls `Mobile.dummy()` to pull the Go bindings in; `Seq.setContext(...)` wires the Android context into gomobile.
 - No release signing is configured — release builds would need a keystore.
 
 ## Go module layout
 
 ```
-hex_globe/
+petri_dish/
 ├── core/      pure logic — geometry, math, rulesets (no Ebiten imports)
-├── hexglobe/  Ebiten game loop, rendering, input
-├── mobile/    gomobile entry (calls hexglobe.NewGame via ebiten/v2/mobile)
+├── petridish/  Ebiten game loop, rendering, input
+├── mobile/    gomobile entry (calls petridish.NewGame via ebiten/v2/mobile)
 ├── main.go    desktop entry (build tag !android)
-├── android/   Gradle wrapper app; consumes Helios.aar
+├── android/   Gradle wrapper app; consumes PetriDish.aar
 └── scripts/   build/install helpers
 ```
 
@@ -108,12 +108,12 @@ The `!android` build tag on `main.go` keeps the desktop entry point out of the m
 ### Add a new ruleset
 
 1. Implement `core.Ruleset` in `core/`.
-2. Wire it in `hexglobe/game.go:NewGame` (currently hard-codes `core.NewDemoRuleset()`).
+2. Wire it in `petridish/game.go:NewGame` (currently hard-codes `core.NewDemoRuleset()`).
 3. Restart desktop; rebuild AAR for Android.
 
 ### Change globe density
 
-`core.NewGlobe(radius, subdivisions)` is called in `hexglobe/game.go:NewGame`. `subdivisions=3` → ~642 cells. Each extra level quadruples face count. **Before you bump it**: the renderer draws every front-facing cell with `DrawTriangles` + a per-edge `StrokeLine` — at subdiv 4 (~2562 cells) this is already noticeable on mid-range Androids.
+`core.NewGlobe(radius, subdivisions)` is called in `petridish/game.go:NewGame`. `subdivisions=3` → ~642 cells. Each extra level quadruples face count. **Before you bump it**: the renderer draws every front-facing cell with `DrawTriangles` + a per-edge `StrokeLine` — at subdiv 4 (~2562 cells) this is already noticeable on mid-range Androids.
 
 ### Change the icon / app label
 
@@ -133,7 +133,7 @@ The `!android` build tag on `main.go` keeps the desktop entry point out of the m
 
 ## Decoupling from `rewind`
 
-The shared `lib_local_dev.sh`, vendored Ebiten, and shared Go/Java/Android toolchain activation are pragmatic but brittle. When Helios grows past prototype, the clean-up worth doing:
+The shared `lib_local_dev.sh`, vendored Ebiten, and shared Go/Java/Android toolchain activation are pragmatic but brittle. When Petri Dish grows past prototype, the clean-up worth doing:
 
 - Vendor Ebiten into `third_party/ebiten` under this project (or drop the `replace` once upstream releases include the features this fork relies on).
 - Copy the minimum needed helpers out of `lib_local_dev.sh` into `scripts/lib_local_dev.sh` here.

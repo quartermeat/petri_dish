@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/hajimehoshi/ebiten/v2"
-	"hex_globe/hexglobe"
+	"petri_dish/petridish"
 )
 
 // Version is overridden at build time via:
@@ -25,7 +25,7 @@ func main() {
 	screenshotPath := flag.String("screenshot", "", "optional PNG path to save a screenshot and exit")
 	flag.Parse()
 
-	game := hexglobe.NewGame()
+	game := petridish.NewGame()
 	game.SetVersion(Version)
 	if dir := desktopSaveDir(); dir != "" {
 		game.SetSaveDir(dir)
@@ -39,7 +39,7 @@ func main() {
 	}
 
 	ebiten.SetWindowSize(game.ScreenWidth()*2, game.ScreenHeight()*2)
-	ebiten.SetWindowTitle("Helios")
+	ebiten.SetWindowTitle("Petri Dish")
 	ebiten.SetTPS(ebiten.SyncWithFPS)
 
 	if err := ebiten.RunGame(game); err != nil {
@@ -49,10 +49,10 @@ func main() {
 
 func desktopSaveDir() string {
 	if dir, err := os.UserConfigDir(); err == nil && dir != "" {
-		return filepath.Join(dir, "Helios")
+		return filepath.Join(dir, "Petri Dish")
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		return filepath.Join(home, ".hex_globe")
+		return filepath.Join(home, ".petri_dish")
 	}
 	return ""
 }

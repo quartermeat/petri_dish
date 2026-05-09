@@ -1,4 +1,4 @@
-package hexglobe
+package petridish
 
 import (
 	"image/color"
