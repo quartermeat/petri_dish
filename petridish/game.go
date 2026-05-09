@@ -58,6 +58,7 @@ const (
 	modeBuild
 	modeTech
 	modeSettings
+	modeDish
 	modeSmelterConfig
 	modeAssemblerConfig
 	modeGeneratorConfig
@@ -100,6 +101,8 @@ type Game struct {
 	knownRecipes          map[string]bool
 	pendingBuildRecipeID  string
 	currentStageID        string
+	dishTileID            int
+	dishCells             []dishCell
 	settingsDown          bool
 	settingsX             int
 	settingsY             int
@@ -128,6 +131,8 @@ type Game struct {
 	modal                 *modalState
 	lastTapCellID         int
 	lastTapTime           time.Time
+	lastTapTacticalTileID int
+	lastTapTacticalTime   time.Time
 	inventoryOverlay      *inventoryOverlayState
 	expandedTechRecipeID  string
 	expandedBuildRecipeID string
@@ -163,6 +168,16 @@ type screenPoint struct {
 type buildPlan struct {
 	rawSpend  map[core.ResourceType]int
 	partSpend map[core.DevicePart]int
+}
+
+type dishCell struct {
+	ID        int
+	Q         int
+	R         int
+	Center    core.Vec3
+	Kind      int
+	Influence int
+	Phase     float64
 }
 
 type mugMoveState struct {
@@ -264,29 +279,31 @@ func init() {
 
 func NewGame() *Game {
 	g := &Game{
-		screenWidth:        defaultScreenWidth,
-		screenHeight:       defaultScreenHeight,
-		zoom:               1,
-		dragTouchID:        -1,
-		pinchTouchA:        -1,
-		pinchTouchB:        -1,
-		settingsTouch:      -1,
-		tacticalMaps:       map[int]*core.TacticalMap{},
-		tacticalID:         -1,
-		tacticalTile:       -1,
-		tacticalZoom:       1,
-		progression:        core.DefaultProgressionBook(),
-		recipes:            core.DefaultRecipeBook(),
-		perks:              core.DefaultPerkBook(),
-		knownRecipes:       map[string]bool{},
-		stagePowerSpent:    map[string]float64{},
-		perksAwarded:       map[string]int{},
-		perkRand:           rand.New(rand.NewSource(time.Now().UnixNano())),
-		lastTapCellID:      -1,
-		configTileID:       -1,
-		mugMoves:           map[int]*mugMoveState{},
-		fieldDataScanCarry: map[fieldDataTileKey]float64{},
-		creaturesEnabled:   false,
+		screenWidth:           defaultScreenWidth,
+		screenHeight:          defaultScreenHeight,
+		zoom:                  1,
+		dragTouchID:           -1,
+		pinchTouchA:           -1,
+		pinchTouchB:           -1,
+		settingsTouch:         -1,
+		tacticalMaps:          map[int]*core.TacticalMap{},
+		tacticalID:            -1,
+		tacticalTile:          -1,
+		tacticalZoom:          1,
+		progression:           core.DefaultProgressionBook(),
+		recipes:               core.DefaultRecipeBook(),
+		perks:                 core.DefaultPerkBook(),
+		knownRecipes:          map[string]bool{},
+		stagePowerSpent:       map[string]float64{},
+		perksAwarded:          map[string]int{},
+		perkRand:              rand.New(rand.NewSource(time.Now().UnixNano())),
+		lastTapCellID:         -1,
+		lastTapTacticalTileID: -1,
+		dishTileID:            -1,
+		configTileID:          -1,
+		mugMoves:              map[int]*mugMoveState{},
+		fieldDataScanCarry:    map[fieldDataTileKey]float64{},
+		creaturesEnabled:      false,
 	}
 	g.installFreshWorld(time.Now().UnixNano())
 	return g
@@ -303,6 +320,8 @@ func (g *Game) installFreshWorld(seed int64) {
 	g.tacticalMaps = map[int]*core.TacticalMap{}
 	g.tacticalID = -1
 	g.tacticalTile = -1
+	g.dishTileID = -1
+	g.dishCells = nil
 	g.tacticalZoom = 1
 	g.tacticalPanX = 0
 	g.tacticalPanY = 0
@@ -341,6 +360,7 @@ func (g *Game) installFreshWorld(seed int64) {
 	g.mugDragStartTile = -1
 	g.mugDragTargetTile = -1
 	g.mugMoves = map[int]*mugMoveState{}
+	g.lastTapTacticalTileID = -1
 	g.fieldDataPopups = nil
 	g.fieldDataScanCarry = map[fieldDataTileKey]float64{}
 	g.uplinkPackets = nil
@@ -711,6 +731,23 @@ func (g *Game) OpenSettingsForTesting() {
 	g.mode = modeSettings
 }
 
+func (g *Game) OpenTacticalForTesting() {
+	if g.globe.SelectedCell < 0 || g.globe.SelectedCell >= len(g.globe.Cells) {
+		g.globe.SelectedCell = 0
+	}
+	g.enterTactical()
+	if tmap := g.currentTacticalMap(); tmap != nil && len(tmap.Tiles) > 0 {
+		g.tacticalTile = len(tmap.Tiles) / 2
+	}
+}
+
+func (g *Game) OpenDishForTesting() {
+	g.OpenTacticalForTesting()
+	if tmap := g.currentTacticalMap(); tmap != nil && len(tmap.Tiles) > 0 {
+		g.enterDish(g.tacticalTile)
+	}
+}
+
 func (g *Game) tutorialActive() bool {
 	return len(g.tutorialLines) > 0
 }
@@ -908,6 +945,11 @@ func (g *Game) Update() error {
 		g.ruleset.Update(g.globe, dt)
 		return nil
 	}
+	if g.mode == modeDish {
+		g.handleDishInput()
+		g.ruleset.Update(g.globe, dt)
+		return nil
+	}
 	if g.mode == modeSmelterConfig {
 		g.handleSmelterConfigInput()
 		g.ruleset.Update(g.globe, dt)
@@ -959,6 +1001,16 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	}
 	if g.mode == modeSettings {
 		g.drawSettings(screen)
+		g.drawModal(screen)
+		g.drawPerkChoice(screen)
+		g.drawInventoryOverlay(screen)
+		g.drawTutorial(screen)
+		g.drawSaveOverlay(screen)
+		g.captureScreenshotIfReady(screen)
+		return
+	}
+	if g.mode == modeDish {
+		g.drawDish(screen)
 		g.drawModal(screen)
 		g.drawPerkChoice(screen)
 		g.drawInventoryOverlay(screen)
@@ -1195,6 +1247,34 @@ func (g *Game) handleTacticalInput() {
 		x, y := ebiten.CursorPosition()
 		g.tryHoldPowerStarterMiner(x, y)
 		g.applyTacticalDrag(x, y)
+	}
+}
+
+func (g *Game) handleDishInput() {
+	if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) {
+		x, y := ebiten.CursorPosition()
+		g.handleDishTap(x, y)
+	}
+	justTouched := inpututil.AppendJustPressedTouchIDs(nil)
+	if len(justTouched) > 0 {
+		x, y := ebiten.TouchPosition(justTouched[0])
+		g.handleDishTap(x, y)
+	}
+}
+
+func (g *Game) handleDishTap(x, y int) {
+	backX, backY, backW, backH := g.backButtonRect()
+	if g.pointInRect(float64(x), float64(y), backX, backY, backW, backH) {
+		g.mode = modeTactical
+		return
+	}
+	if id, ok := g.pickDishCell(x, y); ok {
+		for i := range g.dishCells {
+			if g.dishCells[i].ID == id {
+				g.dishCells[i].Influence = (g.dishCells[i].Influence + 1) % 4
+				return
+			}
+		}
 	}
 }
 
@@ -1535,6 +1615,7 @@ func (g *Game) tacticalSelectionLines(tile *core.TacticalTile) []string {
 	} else {
 		lines = append(lines, "device none")
 	}
+	lines = append(lines, "double tap: dish")
 	return lines
 }
 
@@ -2015,6 +2096,80 @@ func (g *Game) drawTactical(screen *ebiten.Image) {
 	g.drawTacticalHudMeters(screen)
 	g.drawTacticalSelectionPopup(screen)
 	g.drawPendingBuildCard(screen)
+}
+
+func (g *Game) drawDish(screen *ebiten.Image) {
+	screen.Fill(color.RGBA{5, 12, 18, 255})
+	g.drawDishBackdrop(screen)
+	g.drawArrowBackButton(screen)
+	g.drawDishCells(screen)
+	g.drawDishHud(screen)
+}
+
+func (g *Game) drawDishBackdrop(screen *ebiten.Image) {
+	cx, cy := g.dishCenter()
+	radius := g.dishRadius()
+	drawDisc(screen, float32(cx), float32(cy), float32(radius*1.12), color.RGBA{16, 42, 48, 120})
+	drawDisc(screen, float32(cx), float32(cy), float32(radius*1.02), color.RGBA{28, 76, 72, 135})
+	drawDisc(screen, float32(cx), float32(cy), float32(radius*0.94), color.RGBA{12, 34, 40, 235})
+	vector.StrokeCircle(screen, float32(cx), float32(cy), float32(radius*1.02), 3, color.RGBA{174, 230, 232, 205}, false)
+	vector.StrokeCircle(screen, float32(cx), float32(cy), float32(radius*0.92), 1.4, color.RGBA{90, 180, 172, 130}, false)
+	drawDisc(screen, float32(cx-radius*0.34), float32(cy-radius*0.42), float32(radius*0.18), color.RGBA{232, 255, 250, 24})
+}
+
+func (g *Game) drawDishCells(screen *ebiten.Image) {
+	cells := g.currentDishCells()
+	if len(cells) == 0 {
+		return
+	}
+	cx, cy := g.dishCenter()
+	scale := g.dishCellScale()
+	for i := range cells {
+		cell := &cells[i]
+		x := cx + cell.Center.X*scale
+		y := cy + cell.Center.Y*scale
+		fill := dishCellColor(cell.Kind)
+		pulse := 0.5 + 0.5*math.Sin(g.animationTime*(1.2+float64(cell.Kind)*0.18)+cell.Phase)
+		fill = core.BlendColor(fill, color.RGBA{226, 255, 212, 255}, 0.08*pulse)
+		if cell.Influence > 0 {
+			fill = core.BlendColor(fill, dishInfluenceColor(cell.Influence), 0.34)
+		}
+		points := dishHexPoints(x, y, scale*0.52)
+		verts := make([]ebiten.Vertex, 0, len(points))
+		for _, p := range points {
+			verts = append(verts, ebiten.Vertex{DstX: float32(p.x), DstY: float32(p.y), SrcX: 0, SrcY: 0})
+		}
+		drawFilledPolygon(screen, verts, fill)
+		edge := core.ScaleColor(fill, 0.68)
+		if cell.Influence > 0 {
+			edge = dishInfluenceColor(cell.Influence)
+		}
+		drawPolygonStroke(screen, verts, edge)
+		drawDisc(screen, float32(x+scale*0.08*math.Sin(cell.Phase)), float32(y-scale*0.06), float32(scale*(0.10+0.035*pulse)), core.ScaleColor(fill, 1.34))
+	}
+}
+
+func (g *Game) drawDishHud(screen *ebiten.Image) {
+	title := "PETRI DISH"
+	if g.dishTileID >= 0 {
+		title = fmt.Sprintf("PETRI DISH %d", g.dishTileID)
+	}
+	g.drawAlphaDebugTextBlock(screen, 24, 22, []string{
+		title,
+		"automated culture",
+		"tap cells to poke/prod",
+	}, 1)
+	x := 24.0
+	y := float64(g.screenHeight) - 154
+	w := float64(g.screenWidth) - 48
+	h := 74.0
+	drawRoundedRect(screen, float32(x), float32(y), float32(w), float32(h), 8, color.RGBA{8, 18, 24, 218})
+	drawRectOutline(screen, float32(x), float32(y), float32(w), float32(h), color.RGBA{122, 214, 190, 220})
+	g.drawAlphaDebugTextBlock(screen, x+12, y+12, []string{
+		"Culture output: latent perk spores",
+		"Influence cycle: feed / stress / isolate / clear",
+		"Battle perks will hook in here next.",
+	}, 1)
 }
 
 func (g *Game) drawTacticalHudMeters(screen *ebiten.Image) {
@@ -3640,15 +3795,26 @@ func (g *Game) finishTacticalPointer(x, y int) {
 			}
 			return
 		}
+		now := time.Now()
+		if tileID == g.tacticalTile && tileID == g.lastTapTacticalTileID && now.Sub(g.lastTapTacticalTime) <= doubleTapWindow {
+			g.lastTapTacticalTileID = -1
+			g.enterDish(tileID)
+			return
+		}
 		if g.tryCrankTacticalDevice(tileID) {
 			g.tacticalTile = tileID
+			g.lastTapTacticalTileID = tileID
+			g.lastTapTacticalTime = now
 			return
 		}
 		g.tacticalTile = tileID
+		g.lastTapTacticalTileID = tileID
+		g.lastTapTacticalTime = now
 		return
 	}
 	if g.pendingBuildRecipeID == "" {
 		g.tacticalTile = -1
+		g.lastTapTacticalTileID = -1
 	}
 }
 
@@ -3979,6 +4145,27 @@ func (g *Game) pickTacticalTile(x, y int) (int, bool) {
 	return -1, false
 }
 
+func (g *Game) pickDishCell(x, y int) (int, bool) {
+	cells := g.currentDishCells()
+	if len(cells) == 0 {
+		return -1, false
+	}
+	cx, cy := g.dishCenter()
+	scale := g.dishCellScale()
+	p := screenPoint{x: float64(x), y: float64(y)}
+	for _, cell := range cells {
+		cellX := cx + cell.Center.X*scale
+		cellY := cy + cell.Center.Y*scale
+		if math.Hypot(p.x-cellX, p.y-cellY) > scale*0.64 {
+			continue
+		}
+		if pointInPolygon(p, dishHexPoints(cellX, cellY, scale*0.52)) {
+			return cell.ID, true
+		}
+	}
+	return -1, false
+}
+
 func (g *Game) drawTacticalEntities(screen *ebiten.Image, tmap *core.TacticalMap, cx, cy, tileScale float64) {
 	for _, entity := range tmap.Entities {
 		if entity.TileID < 0 || entity.TileID >= len(tmap.Tiles) {
@@ -4013,11 +4200,25 @@ func (g *Game) enterTactical() {
 	g.tacticalID = g.globe.SelectedCell
 	g.tacticalMapForCell(g.tacticalID)
 	g.tacticalTile = -1
+	g.dishTileID = -1
+	g.dishCells = nil
+	g.lastTapTacticalTileID = -1
 	g.tacticalZoom = 1
 	g.tacticalPanX = 0
 	g.tacticalPanY = 0
 	g.resetTacticalPerkRun()
 	g.mode = modeTactical
+}
+
+func (g *Game) enterDish(tileID int) {
+	tmap := g.currentTacticalMap()
+	if tmap == nil || tileID < 0 || tileID >= len(tmap.Tiles) {
+		return
+	}
+	g.tacticalTile = tileID
+	g.dishTileID = tileID
+	g.dishCells = buildDishCells(g.tacticalID, tileID)
+	g.mode = modeDish
 }
 
 func (g *Game) resetTacticalPerkRun() {
@@ -4049,6 +4250,59 @@ func (g *Game) tacticalCenter() (float64, float64) {
 
 func (g *Game) tacticalTileScale() float64 {
 	return math.Min(float64(g.screenWidth), float64(g.screenHeight)) * 0.07 * g.tacticalZoom
+}
+
+func (g *Game) currentDishCells() []dishCell {
+	if g.dishTileID < 0 {
+		return nil
+	}
+	if len(g.dishCells) == 0 {
+		g.dishCells = buildDishCells(g.tacticalID, g.dishTileID)
+	}
+	return g.dishCells
+}
+
+func buildDishCells(regionID, tileID int) []dishCell {
+	const radius = 4
+	seed := int64(regionID*73856093 ^ tileID*19349663)
+	rng := rand.New(rand.NewSource(seed))
+	cells := make([]dishCell, 0, 61)
+	id := 0
+	for q := -radius; q <= radius; q++ {
+		rMin := maxIntLocal(-radius, -q-radius)
+		rMax := minIntLocal(radius, -q+radius)
+		for r := rMin; r <= rMax; r++ {
+			x := math.Sqrt(3) * (float64(q) + float64(r)*0.5)
+			y := 1.5 * float64(r)
+			dist := math.Hypot(x, y)
+			if dist > 7.05 {
+				continue
+			}
+			kind := rng.Intn(4)
+			cells = append(cells, dishCell{
+				ID:     id,
+				Q:      q,
+				R:      r,
+				Center: core.Vec3{X: x, Y: y},
+				Kind:   kind,
+				Phase:  rng.Float64() * math.Pi * 2,
+			})
+			id++
+		}
+	}
+	return cells
+}
+
+func (g *Game) dishCenter() (float64, float64) {
+	return float64(g.screenWidth) * 0.5, float64(g.screenHeight) * 0.48
+}
+
+func (g *Game) dishRadius() float64 {
+	return math.Min(float64(g.screenWidth), float64(g.screenHeight)) * 0.42
+}
+
+func (g *Game) dishCellScale() float64 {
+	return g.dishRadius() / 7.8
 }
 
 func (g *Game) handleTacticalZoom() {
@@ -4356,7 +4610,7 @@ func (g *Game) buildButtonRect() (float64, float64, float64, float64) {
 func (g *Game) tacticalSelectionPopupRect() (float64, float64, float64, float64) {
 	buildX, buildY, buildW, _ := g.buildButtonRect()
 	w := 170.0
-	h := 88.0
+	h := 104.0
 	x := buildX + buildW - w
 	y := buildY - h - 12
 	return x, y, w, h
@@ -4376,6 +4630,44 @@ func tacticalHexPoints(center core.Vec3, scale float64) []screenPoint {
 		})
 	}
 	return points
+}
+
+func dishHexPoints(cx, cy, radius float64) []screenPoint {
+	points := make([]screenPoint, 0, 6)
+	for i := 0; i < 6; i++ {
+		angle := math.Pi/6 + float64(i)*math.Pi/3
+		points = append(points, screenPoint{
+			x: cx + math.Cos(angle)*radius,
+			y: cy + math.Sin(angle)*radius,
+		})
+	}
+	return points
+}
+
+func dishCellColor(kind int) color.RGBA {
+	switch kind % 4 {
+	case 0:
+		return color.RGBA{90, 188, 118, 235}
+	case 1:
+		return color.RGBA{112, 206, 186, 235}
+	case 2:
+		return color.RGBA{178, 126, 214, 235}
+	default:
+		return color.RGBA{214, 166, 82, 235}
+	}
+}
+
+func dishInfluenceColor(influence int) color.RGBA {
+	switch influence {
+	case 1:
+		return color.RGBA{134, 238, 134, 255}
+	case 2:
+		return color.RGBA{246, 118, 92, 255}
+	case 3:
+		return color.RGBA{178, 214, 255, 255}
+	default:
+		return color.RGBA{220, 235, 220, 255}
+	}
 }
 
 func itoa(v int) string {
@@ -5941,6 +6233,13 @@ func (g *Game) grantDevResource(resource core.ResourceType, minimum int) {
 
 func maxIntLocal(a, b int) int {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+func minIntLocal(a, b int) int {
+	if a < b {
 		return a
 	}
 	return b

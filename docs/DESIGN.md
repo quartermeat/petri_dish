@@ -1,6 +1,23 @@
 # Petri Dish — Design
 
-What the code currently does and how it's put together. No forward-looking opinions — those live in the conversation, not here.
+What the code currently does, how it's put together, and the current product direction.
+
+## North star
+
+Petri Dish is a phone-first, Mewgenics-inspired tactics game prototype. The project should preserve two core layers:
+
+- **Strategic view.** The rotating globe remains the higher-level map, campaign surface, and place for broad-world decisions.
+- **Tactical view.** The local hex/tile view remains the lower-level play space and should evolve into a turn-based tactical battlefield.
+
+For the current prototype, a tactical tile can zoom one level deeper into a living cell grid. Working name: **Petri dish view**; alternate name to consider later: **Culture view**. This view is a small dish of cells that runs mostly automated. The player does not directly command every cell. Instead, they poke, prod, seed, stress, feed, isolate, or otherwise perturb the dish to influence its evolution.
+
+The dish should become a bridge between experimentation and tactics. Successful cultures produce new traits, mutations, or perks that can later be applied to units used in the tactical battlefield. The design goal is for the player to feel like they are cultivating strange biological possibilities, then weaponizing or field-testing them in tactical encounters.
+
+The long-term shape is not a pure factory game or a pure globe toy. The current resource/build systems are useful prototype scaffolding, but future design choices should bend toward readable mobile tactics: clear unit state, sharp turn structure, compact battlefields, fast touch interactions, and decisions that feel good in short phone sessions.
+
+Mewgenics is the reference point for tone and structure: strange little organisms, authored-feeling tactical situations, inherited/quirky traits, and battles where positioning and emergent unit behavior matter. Petri Dish should find its own cellular/biome identity rather than copying the theme directly.
+
+## Current implementation
 
 ## What it is
 

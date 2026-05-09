@@ -21,7 +21,7 @@ import (
 var Version = ""
 
 func main() {
-	startView := flag.String("view", "", "optional startup view: settings")
+	startView := flag.String("view", "", "optional startup view: settings, tactical, dish")
 	screenshotPath := flag.String("screenshot", "", "optional PNG path to save a screenshot and exit")
 	flag.Parse()
 
@@ -33,6 +33,10 @@ func main() {
 	}
 	if *startView == "settings" {
 		game.OpenSettingsForTesting()
+	} else if *startView == "tactical" {
+		game.OpenTacticalForTesting()
+	} else if *startView == "dish" {
+		game.OpenDishForTesting()
 	}
 	if *screenshotPath != "" {
 		game.ConfigureScreenshot(*screenshotPath, 10)
